@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="main" style="padding: 40px; align-items: center;">
+    <form method="POST" enctype="multipart/form-data" style="background: #2f3136; padding: 30px; border-radius: 10px; width: 500px;">
+        <h2>Настройки профиля</h2>
+        
+        <div style="margin-bottom: 20px; text-align: center;">
+            <img src="{{ user.avatar_url }}" id="avatarPreview" style="width: 100px; height: 100px; border-radius: 50%; object-fit: cover; margin-bottom: 10px; cursor: pointer;" onclick="document.getElementById('avatar_file').click();">
+            <br>
+            <input type="file" name="avatar_file" id="avatar_file" accept="image/*" style="display: none;" onchange="previewAvatar(this);">
+            <button type="button" class="btn" onclick="document.getElementById('avatar_file').click();" style="font-size: 0.9em;">Загрузить аватар</button>
+            {% if user.avatar_url and user.avatar_url != "https://via.placeholder.com/50" %}
+            <button type="button" class="btn btn-red" onclick="deleteAvatar();" style="font-size: 0.9em; margin-left: 10px;">Удалить аватар</button>
+            {% endif %}
+        </div>
+        
+        
+        <label>О себе (Bio):</label>
+        <textarea name="bio" class="input-box" style="margin-bottom: 15px; height: 80px;">{{ user.bio }}</textarea>
+        
+        <h3>Конфиденциальность</h3>
+        <label style="display: block; margin-bottom: 10px;">
+            <input type="checkbox" name="privacy_searchable" {% if user.privacy_searchable %}checked{% endif %}>
+            Разрешить искать меня в поиске
+        </label>
+        <label style="display: block; margin-bottom: 20px;">
+            <input type="checkbox" name="privacy_listable" {% if user.privacy_listable %}checked{% endif %}>
+            Показывать меня в списке участников
+        </label>
+        
+        <h3>Музыкальная библиотека</h3>
+        <div id="musicList" style="margin-bottom: 20px;">
+            {% for music in user.music_tracks %}
+            <div style="background: #36393f; padding: 10px; margin: 5px 0; border-radius: 5px; display: flex; align-items: center; gap: 10px;">
+                {% if music.cover_url %}
+                <img src="{{ music.cover_url }}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 5px;">
+                {% endif %}
+                <div style="flex: 1;">
+                    <div style="font-weight: bold;">{{ music.title }}</div>
+                    <div style="font-size: 0.9em; color: #aaa;">{{ music.artist }}</div>
+                </div>
+                <audio controls style="height: 30px; width: 200px;">
+                    <source src="{{ music.file_url }}" type="audio/mpeg">
+                </audio>
+                <button type="button" class="btn btn-red" onclick="deleteMusic({{ music.id }})" style="padding: 5px 10px; font-size: 0.8em;">Удалить</button>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div style="background: #36393f; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+            <h4 style="margin-top: 0;">Добавить музыку</h4>
+            <input type="file" id="music_file" accept="audio/*" style="margin-bottom: 10px; width: 100%;">
+            <input type="text" id="music_title" placeholder="Название" class="input-box" style="margin-bottom: 10px;">
+            <input type="text" id="music_artist" placeholder="Исполнитель" class="input-box" style="margin-bottom: 10px;">
+            <input type="file" id="music_cover" accept="image/*" style="margin-bottom: 10px; width: 100%;">
+            <button type="button" class="btn" onclick="addMusic()">Добавить</button>
+        </div>
+        
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button type="submit" class="btn">Сохранить</button>
+            <button type="button" class="btn btn-red" onclick="deleteAccount()" style="background: #d83c3e;">Удалить аккаунт</button>
+        </div>
+    </form>
+</div>
+
+<script>
+function previewAvatar(input) {
+    if (input.files && input.files[0]) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            document.getElementById('avatarPreview').src = e.target.result;
+        };
+        reader.readAsDataURL(input.files[0]);
+    }
+}
+
+function addMusic() {
+    const fileInput = document.getElementById('music_file');
+    const titleInput = document.getElementById('music_title');
+    const artistInput = document.getElementById('music_artist');
+    const coverInput = document.getElementById('music_cover');
+    
+    if (!fileInput.files[0]) {
+        // Используем простой prompt вместо alert для совместимости
+        if (!confirm('Выберите файл музыки')) return;
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('music_file', fileInput.files[0]);
+    formData.append('title', titleInput.value || 'Без названия');
+    formData.append('artist', artistInput.value || 'Неизвестный исполнитель');
+    if (coverInput.files[0]) {
+        formData.append('cover_file', coverInput.files[0]);
+    }
+    
+    fetch('/music/add', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            // Используем простой alert для совместимости
+            alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+        }
+    });
+}
+
+function deleteMusic(musicId) {
+    if (!confirm('Удалить эту композицию?')) return;
+    
+    fetch(`/music/${musicId}/delete`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        }
+    });
+}
+
+function deleteAvatar() {
+    if (!confirm('Удалить аватар?')) return;
+    
+    fetch('/user/avatar/delete', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+        }
+    });
+}
+
+function deleteAccount() {
+    const password = prompt('Введите ваш пароль для подтверждения удаления аккаунта:');
+    if (!password) return;
+    
+    if (!confirm('ВНИМАНИЕ! Удаление аккаунта необратимо!\n\nВсе ваши данные будут удалены:\n- Профиль\n- Сообщения\n- Файлы\n- Музыка\n- Стикеры\n\nВы уверены, что хотите удалить аккаунт?')) {
+        return;
+    }
+    
+    fetch('/user/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({password: password})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert('Аккаунт удален. Вы будете перенаправлены на страницу входа.');
+            window.location.href = '/login';
+        } else {
+            alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+        }
+    });
+}
+</script>
+{% endblock %}

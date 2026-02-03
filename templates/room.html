@@ -1,0 +1,1595 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+    .channel-item { position: relative; }
+    .channel-item:hover .channel-actions { display: flex; }
+    .channel-actions { display: none; position: absolute; right: 5px; gap: 5px; }
+    .channel-actions button { background: #d9534f; padding: 2px 6px; font-size: 0.7em; border: none; border-radius: 3px; cursor: pointer; }
+    .channel-icon { width: 20px; height: 20px; display: inline-block; vertical-align: middle; margin-right: 5px; }
+        .message-file { background: #2f3136; padding: 10px; border-radius: 5px; margin: 5px 0; display: inline-block; }
+        .message-image { max-width: 400px; max-height: 400px; border-radius: 5px; cursor: pointer; margin: 5px 0; }
+        .message-audio { width: 100%; max-width: 400px; margin: 5px 0; }
+        .file-icon { font-size: 2em; margin-right: 10px; }
+        .fullscreen-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: none; align-items: center; justify-content: center; cursor: pointer; }
+        .fullscreen-overlay img { max-width: 90%; max-height: 90%; }
+        .profile-preview { position: fixed; background: #2f3136; padding: 20px; border-radius: 10px; z-index: 10001; display: none; max-width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .avatar-clickable { cursor: pointer; }
+        .file-preview-item { background: #36393f; padding: 10px; border-radius: 5px; position: relative; max-width: 200px; }
+        .file-preview-item img { max-width: 180px; max-height: 180px; border-radius: 5px; }
+        .file-preview-item .remove-btn { position: absolute; top: 5px; right: 5px; background: #d9534f; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; color: white; font-size: 12px; }
+        .file-preview-item .file-name { font-size: 0.8em; color: #aaa; margin-top: 5px; word-break: break-all; }
+        .message { position: relative; display: flex; gap: 10px; align-items: flex-start; }
+        .msg-text { white-space: pre-line; word-wrap: break-word; }
+        .avatar { flex-shrink: 0; }
+        .avatar img { object-fit: cover; }
+        
+        /* Модальные окна в стиле Discord */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 10003; display: none; align-items: center; justify-content: center; }
+        .modal { background: #36393f; border-radius: 8px; padding: 20px; min-width: 400px; max-width: 500px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+        .modal-header { font-size: 1.2em; font-weight: bold; margin-bottom: 15px; color: #fff; }
+        .modal-body { color: #dcddde; margin-bottom: 20px; }
+        .modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
+        .modal-btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; }
+        .modal-btn-primary { background: #5865f2; color: white; }
+        .modal-btn-primary:hover { background: #4752c4; }
+        .modal-btn-danger { background: #d83c3e; color: white; }
+        .modal-btn-danger:hover { background: #c03537; }
+        .modal-btn-secondary { background: #4f545c; color: white; }
+        .modal-btn-secondary:hover { background: #5d6269; }
+        
+        /* Контекстное меню */
+        .context-menu { position: fixed; background: #18191c; border-radius: 4px; padding: 4px; min-width: 200px; box-shadow: 0 8px 16px rgba(0,0,0,0.24); z-index: 10004; display: none; }
+        .context-menu-item { padding: 8px 12px; color: #b9bbbe; cursor: pointer; border-radius: 2px; font-size: 0.9em; display: flex; align-items: center; gap: 8px; }
+        .context-menu-item:hover { background: #5865f2; color: white; }
+        .context-menu-item.danger:hover { background: #d83c3e; }
+        .context-menu-separator { height: 1px; background: #4f545c; margin: 4px 0; }
+        
+        /* Реакции */
+        .message-reactions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+        .reaction { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; background: #2f3136; border-radius: 12px; cursor: pointer; font-size: 0.9em; border: 1px solid transparent; }
+        .reaction:hover { background: #393c43; border-color: #5865f2; }
+        .reaction.active { background: #5865f2; border-color: #5865f2; }
+        .reaction-emoji { font-size: 1.1em; }
+        .reaction-count { color: #b9bbbe; font-size: 0.85em; }
+        .reaction.active .reaction-count { color: white; }
+        
+        /* Эмодзи пикер */
+        .emoji-picker { position: fixed; background: #2f3136; border-radius: 8px; padding: 10px; width: 300px; max-height: 300px; overflow-y: auto; box-shadow: 0 8px 16px rgba(0,0,0,0.24); z-index: 10005; display: none; }
+        .emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
+        .emoji-item { font-size: 1.5em; cursor: pointer; padding: 5px; text-align: center; border-radius: 4px; }
+        .emoji-item:hover { background: #393c43; }
+        
+        /* Стикеры */
+        .sticker-picker { position: fixed; background: #2f3136; border-radius: 8px; padding: 10px; width: 350px; max-height: 400px; overflow-y: auto; box-shadow: 0 8px 16px rgba(0,0,0,0.24); z-index: 10005; display: none; }
+        .sticker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .sticker-item { cursor: pointer; border-radius: 4px; overflow: hidden; }
+        .sticker-item img { width: 100%; height: auto; display: block; }
+        .sticker-item:hover { background: #393c43; }
+        .message-sticker { max-width: 200px; max-height: 200px; cursor: pointer; }
+</style>
+
+<div class="panel">
+    <div class="panel-header">
+        {% if room.type == 'dm' %}
+            {% for m in room.members %}
+                {% if m.user_id != current_user.id %}
+                    {{ m.user.username }}
+                {% endif %}
+            {% endfor %}
+        {% else %}
+            {{ room.name }}
+        {% endif %}
+        {% if member.role in ['owner', 'admin'] %}
+        <a href="{{ url_for('room_settings', room_id=room.id) }}" style="float: right; font-size: 0.8em; color: #aaa;">⚙️</a>
+        {% endif %}
+        {% if room.type != 'dm' and member.role in ['owner', 'admin'] %}
+        <button onclick="inviteToRoom({{ room.id }}); return false;" style="float: right; margin-right: 10px; background: #5865f2; border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em;">Пригласить</button>
+        {% endif %}
+    </div>
+    <div class="channel-list">
+        {% if room.type != 'dm' %}
+            <div style="font-size: 0.7em; text-transform: uppercase; margin: 10px 0 5px 10px; color: #72767d;">Каналы</div>
+            {% for ch in room.channels %}
+                <div class="channel-item">
+                    <a href="{{ url_for('view_room', room_id=room.id, channel_id=ch.id) }}" 
+                       class="channel-item {% if ch.id == active_channel_id %}active{% endif %}" style="display: block; padding: 5px 10px;">
+                        {% if ch.icon_image_url %}
+                            <img src="{{ ch.icon_image_url }}" class="channel-icon">
+                        {% elif ch.icon_emoji %}
+                            <span class="channel-icon" style="font-size: 16px;">{{ ch.icon_emoji }}</span>
+                        {% endif %}
+                        # {{ ch.name }}
+                        {% if ch.description %}
+                            <div style="font-size: 0.7em; color: #72767d; margin-left: 25px;">{{ ch.description }}</div>
+                        {% endif %}
+                    </a>
+                    {% if member.role in ['owner', 'admin'] %}
+                    <div class="channel-actions">
+                        <button onclick="editChannel({{ ch.id }}, '{{ ch.name }}', '{{ ch.description or '' }}', '{{ ch.icon_emoji or '' }}', '{{ ch.icon_image_url or '' }}'); return false;">✏️</button>
+                        <button onclick="deleteChannel({{ ch.id }}); return false;">🗑️</button>
+                    </div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+            
+            {% if member.role in ['owner', 'admin'] %}
+            <form action="{{ url_for('add_channel', room_id=room.id) }}" method="POST" style="padding: 10px;">
+                <input name="name" placeholder="+ Канал" class="input-box" style="padding: 5px; font-size: 0.9em;">
+            </form>
+            {% endif %}
+            
+        {% else %}
+             <div style="padding:10px;">Личная переписка</div>
+        {% endif %}
+        
+        <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 10px;">
+            <div style="font-size: 0.7em; margin: 0 0 5px 10px; color: #72767d;">Участники</div>
+            {% for m in room.members %}
+                <div style="padding: 2px 10px; font-size: 0.9em; {% if m.role=='owner' %}color: gold;{% endif %}">
+                    {{ m.user.username }}
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<div class="main">
+    <div class="chat-header">
+        {% if room.type == 'broadcast' %}📢{% else %}#{% endif %} 
+        Чат
+    </div>
+    
+    <div class="messages" id="messages">
+        {% for msg in messages %}
+        <div class="message" data-msg-id="{{ msg.id }}">
+            <div class="avatar avatar-clickable" onclick="showProfile({{ msg.user.id }}, event)">
+                <img src="{{ msg.user.avatar_url }}">
+            </div>
+            <div class="msg-content">
+                <div class="msg-meta">
+                    <span style="color: white; font-weight: bold; margin-right: 5px; cursor: pointer;" onclick="showProfile({{ msg.user.id }}, event)">{{ msg.user.username }}</span> 
+                    {{ msg.timestamp.strftime('%H:%M') }}
+                    {% if msg.edited_at %}
+                    <span style="color: #72767d; font-size: 0.85em; margin-left: 5px;">(изменено)</span>
+                    {% endif %}
+                </div>
+                <div class="msg-text">
+                    {% if msg.message_type == 'sticker' %}
+                        <img src="{{ msg.file_url }}" class="message-sticker" onclick="showFullscreen('{{ msg.file_url }}')">
+                    {% elif msg.message_type == 'image' %}
+                        <img src="{{ msg.file_url }}" class="message-image" onclick="showFullscreen('{{ msg.file_url }}')">
+                        {% if msg.content %}<div>{{ msg.content }}</div>{% endif %}
+                    {% elif msg.message_type == 'music' %}
+                        <div class="message-file">
+                            <audio controls class="message-audio">
+                                <source src="{{ msg.file_url }}" type="audio/mpeg">
+                            </audio>
+                            <div style="margin-top: 5px;">
+                                <a href="{{ msg.file_url }}" download style="color: #007bff;">Скачать</a>
+                            </div>
+                            {% if msg.content %}<div>{{ msg.content }}</div>{% endif %}
+                        </div>
+                    {% elif msg.message_type == 'file' %}
+                        <div class="message-file" style="display: flex; align-items: center;">
+                            <div class="file-icon">📎</div>
+                            <div style="flex: 1;">
+                                <div style="font-weight: bold;">{{ msg.file_name }}</div>
+                                <div style="font-size: 0.8em; color: #aaa;">
+                                    <a href="{{ msg.file_url }}" onclick="previewFile('{{ msg.file_url }}'); return false;" style="color: #007bff; margin-right: 10px;">Предпросмотр</a>
+                                    <a href="{{ msg.file_url }}" download style="color: #007bff;">Скачать</a>
+                                </div>
+                            </div>
+                        </div>
+                        {% if msg.content %}<div>{{ msg.content }}</div>{% endif %}
+                    {% else %}
+                        {{ msg.content }}
+                    {% endif %}
+                </div>
+                {% if msg.reactions_grouped %}
+                <div class="message-reactions">
+                    {% for emoji, users in msg.reactions_grouped.items() %}
+                    <div class="reaction {% if current_user.username in users %}active{% endif %}" onclick="toggleReaction({{ msg.id }}, '{{ emoji }}')">
+                        <span class="reaction-emoji">{{ emoji }}</span>
+                        <span class="reaction-count">{{ users|length }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if room.type == 'broadcast' and member.role not in ['owner', 'admin'] %}
+        <div class="input-area" style="text-align: center; color: #777;">
+            Только администраторы могут писать здесь.
+            {% if room.linked_chat_id %}
+             <a href="{{ url_for('view_room', room_id=room.linked_chat_id) }}" style="color: #007bff;">Перейти к комментариям</a>
+            {% endif %}
+        </div>
+    {% else %}
+        <div id="filePreviewArea" style="display: none; padding: 10px 20px; background: #2f3136; border-top: 1px solid #202225; max-height: 200px; overflow-y: auto;">
+            <div id="filePreviews" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
+        </div>
+        <div class="input-area" style="display: flex; gap: 10px; align-items: flex-end;">
+            <input type="file" id="fileInput" style="display: none;" multiple accept="image/*,audio/*,.txt,.py,.js,.html,.css,.json,.xml,.md,.pdf,.zip,.rar">
+            <button type="button" class="btn" onclick="document.getElementById('fileInput').click();" style="padding: 10px;">📎</button>
+            <button type="button" class="btn" onclick="toggleStickerPicker()" style="padding: 10px;">😀</button>
+            <textarea id="myMessage" class="input-box" placeholder="Написать сообщение..." style="flex: 1; min-height: 40px; max-height: 150px; resize: none; font-family: inherit;" rows="1"></textarea>
+            <button type="button" class="btn" onclick="sendMessage()">Отправить</button>
+        </div>
+    {% endif %}
+</div>
+
+<!-- Модальные окна -->
+<div class="fullscreen-overlay" id="fullscreenOverlay" onclick="this.style.display='none';">
+    <img id="fullscreenImage" src="">
+</div>
+
+<div class="profile-preview" id="profilePreview"></div>
+
+<!-- Стилизованные модальные окна -->
+<div class="modal-overlay" id="confirmModal">
+    <div class="modal">
+        <div class="modal-header" id="confirmTitle">Подтверждение</div>
+        <div class="modal-body" id="confirmMessage"></div>
+        <div class="modal-footer">
+            <button class="modal-btn modal-btn-secondary" onclick="closeConfirmModal(false)">Отмена</button>
+            <button class="modal-btn modal-btn-danger" id="confirmBtn" onclick="closeConfirmModal(true)">Подтвердить</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="alertModal">
+    <div class="modal">
+        <div class="modal-header">Уведомление</div>
+        <div class="modal-body" id="alertMessage"></div>
+        <div class="modal-footer">
+            <button class="modal-btn modal-btn-primary" onclick="closeAlertModal()">ОК</button>
+        </div>
+    </div>
+</div>
+
+<!-- Контекстное меню для сообщений -->
+<div class="context-menu" id="messageContextMenu">
+    <div class="context-menu-item" onclick="copyMessage()">
+        <span>📋</span> Копировать
+    </div>
+    <div class="context-menu-item" onclick="editMessage()">
+        <span>✏️</span> Редактировать
+    </div>
+    <div class="context-menu-item" onclick="forwardMessage()">
+        <span>➡️</span> Переслать
+    </div>
+    <div class="context-menu-item" onclick="showReactionPicker()">
+        <span>😀</span> Добавить реакцию
+    </div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item danger" onclick="deleteMessageFromMenu()">
+        <span>🗑️</span> Удалить
+    </div>
+</div>
+
+<!-- Эмодзи пикер -->
+<div class="emoji-picker" id="emojiPicker">
+    <div class="emoji-grid" id="emojiGrid"></div>
+</div>
+
+<!-- Стикер пикер (как в Telegram) -->
+<div class="sticker-picker" id="stickerPicker" style="width: 400px;">
+    <div id="stickerPackList" style="display: flex; gap: 5px; padding: 10px; border-bottom: 1px solid #202225; overflow-x: auto;">
+        <!-- Список стикерпаков будет здесь -->
+    </div>
+    <div class="sticker-grid" id="stickerGrid" style="padding: 10px;"></div>
+</div>
+
+<!-- Модальное окно создания комнаты -->
+<div class="modal-overlay" id="createRoomModal">
+    <div class="modal">
+        <div class="modal-header">Создать комнату</div>
+        <form id="createRoomForm" onsubmit="submitCreateRoom(event); return false;">
+            <div class="modal-body">
+                <label>Название:</label>
+                <input type="text" id="roomName" class="input-box" style="margin-bottom: 10px;" required>
+                <label>Тип:</label>
+                <select id="roomType" class="input-box" style="margin-bottom: 10px;">
+                    <option value="server">Сервер (С чатами)</option>
+                    <option value="broadcast">Блог (Только чтение)</option>
+                </select>
+                <label style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="roomPublic">
+                    Публичный (виден в поиске)
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="modal-btn modal-btn-secondary" onclick="closeModal('createRoomModal')">Отмена</button>
+                <button type="submit" class="modal-btn modal-btn-primary">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модальное окно создания стикерпака -->
+<div class="modal-overlay" id="createStickerPackModal">
+    <div class="modal">
+        <div class="modal-header">Создать стикерпак</div>
+        <form id="createStickerPackForm" onsubmit="submitCreateStickerPack(event); return false;">
+            <div class="modal-body">
+                <label>Название:</label>
+                <input type="text" id="packName" class="input-box" style="margin-bottom: 10px;" required>
+                <label>Эмодзи для иконки:</label>
+                <input type="text" id="packEmoji" class="input-box" style="margin-bottom: 10px;" value="📦" maxlength="2">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="modal-btn modal-btn-secondary" onclick="closeModal('createStickerPackModal')">Отмена</button>
+                <button type="submit" class="modal-btn modal-btn-primary">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модальное окно редактирования стикерпака -->
+<div class="modal-overlay" id="editStickerPackModal">
+    <div class="modal">
+        <div class="modal-header">Редактировать стикерпак</div>
+        <div class="modal-body" id="editStickerPackContent">
+            <!-- Контент будет добавлен динамически -->
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="modal-btn modal-btn-secondary" onclick="closeModal('editStickerPackModal')">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно редактирования канала -->
+<div id="channelEditModal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #2f3136; padding: 20px; border-radius: 10px; z-index: 10002; min-width: 300px;">
+    <h3>Редактировать канал</h3>
+    <form id="channelEditForm" onsubmit="saveChannelEdit(event); return false;">
+        <input type="hidden" id="edit_channel_id">
+        <label>Название:</label>
+        <input type="text" id="edit_channel_name" class="input-box" style="margin-bottom: 10px;" required>
+        <label>Описание:</label>
+        <textarea id="edit_channel_description" class="input-box" style="margin-bottom: 10px; height: 60px;"></textarea>
+        <label>Эмодзи (или загрузите 32x32 изображение):</label>
+        <input type="text" id="edit_channel_emoji" class="input-box" style="margin-bottom: 10px;" placeholder="🎵">
+        <input type="file" id="edit_channel_icon" accept="image/*" style="margin-bottom: 10px; width: 100%;">
+        <div style="display: flex; gap: 10px;">
+            <button type="submit" class="btn">Сохранить</button>
+            <button type="button" class="btn btn-red" onclick="document.getElementById('channelEditModal').style.display='none';">Отмена</button>
+        </div>
+    </form>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+    const socket = io();
+    const channelId = "{{ active_channel_id }}";
+    const roomId = "{{ room.id }}";
+    const messagesDiv = document.getElementById('messages');
+    const currentUserId = {{ current_user.id }};
+    const currentUsername = "{{ current_user.username }}";
+    const userRole = "{{ member.role }}";
+    let selectedFiles = [];
+    let filePreviews = [];
+    
+    socket.on('connect', function() {
+        socket.emit('join', {channel_id: channelId});
+    });
+
+    socket.on('receive_message', function(data) {
+        addMessageToChat(data);
+    });
+
+    socket.on('message_deleted', function(data) {
+        const msgElement = document.querySelector(`[data-msg-id="${data.message_id}"]`);
+        if (msgElement) {
+            msgElement.remove();
+        }
+    });
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        files.forEach(file => {
+            addFilePreview(file);
+        });
+        updateFilePreviewArea();
+    });
+
+    const textarea = document.getElementById('myMessage');
+    if (textarea) {
+        // Автоматическое изменение высоты textarea
+        textarea.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+
+        // Обработка Tab для отступа
+        textarea.addEventListener('keydown', function(event) {
+            if (event.key === 'Tab') {
+                event.preventDefault();
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
+                this.selectionStart = this.selectionEnd = start + 4;
+            }
+        });
+
+        // Обработка Enter и Shift+Enter
+        textarea.addEventListener("keydown", function(event) {
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+    }
+
+    function addFilePreview(file) {
+        const preview = {
+            file: file,
+            id: Date.now() + Math.random()
+        };
+        filePreviews.push(preview);
+        renderFilePreviews();
+    }
+
+    function removeFilePreview(id) {
+        filePreviews = filePreviews.filter(p => p.id !== id);
+        renderFilePreviews();
+        updateFilePreviewArea();
+    }
+
+    function renderFilePreviews() {
+        const container = document.getElementById('filePreviews');
+        container.innerHTML = '';
+        
+        filePreviews.forEach(preview => {
+            const div = document.createElement('div');
+            div.className = 'file-preview-item';
+            div.dataset.previewId = preview.id;
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.onclick = () => removeFilePreview(preview.id);
+            
+            if (preview.file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    img.alt = preview.file.name;
+                    img.style.maxWidth = '180px';
+                    img.style.maxHeight = '180px';
+                    img.style.borderRadius = '5px';
+                    
+                    const fileName = document.createElement('div');
+                    fileName.className = 'file-name';
+                    fileName.textContent = preview.file.name;
+                    
+                    div.appendChild(removeBtn);
+                    div.appendChild(img);
+                    div.appendChild(fileName);
+                };
+                reader.readAsDataURL(preview.file);
+            } else if (preview.file.type.startsWith('audio/')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const audio = document.createElement('audio');
+                    audio.controls = true;
+                    audio.style.width = '180px';
+                    audio.style.height = '30px';
+                    const source = document.createElement('source');
+                    source.src = e.target.result;
+                    source.type = preview.file.type;
+                    audio.appendChild(source);
+                    
+                    const fileName = document.createElement('div');
+                    fileName.className = 'file-name';
+                    fileName.textContent = preview.file.name;
+                    
+                    div.appendChild(removeBtn);
+                    div.appendChild(audio);
+                    div.appendChild(fileName);
+                };
+                reader.readAsDataURL(preview.file);
+            } else {
+                const ext = preview.file.name.split('.').pop().toUpperCase();
+                const icon = document.createElement('div');
+                icon.className = 'file-icon';
+                icon.style.textAlign = 'center';
+                icon.style.fontSize = '3em';
+                icon.textContent = '📎';
+                
+                const fileName = document.createElement('div');
+                fileName.className = 'file-name';
+                fileName.textContent = preview.file.name;
+                
+                const extLabel = document.createElement('div');
+                extLabel.style.fontSize = '0.7em';
+                extLabel.style.color = '#72767d';
+                extLabel.textContent = ext + ' файл';
+                
+                div.appendChild(removeBtn);
+                div.appendChild(icon);
+                div.appendChild(fileName);
+                div.appendChild(extLabel);
+            }
+            
+            container.appendChild(div);
+        });
+    }
+
+    function updateFilePreviewArea() {
+        const area = document.getElementById('filePreviewArea');
+        if (filePreviews.length > 0) {
+            area.style.display = 'block';
+        } else {
+            area.style.display = 'none';
+        }
+    }
+
+    function sendMessage() {
+        const input = document.getElementById('myMessage');
+        let text = input.value;
+        
+        // Убираем только начальные и конечные пробелы/переносы строк
+        // Переносы строк внутри текста сохраняются
+        text = text.trim();
+        
+        if (filePreviews.length > 0) {
+            // Отправляем все файлы с одним текстом
+            filePreviews.forEach(preview => {
+                uploadAndSendFile(preview.file, text);
+            });
+            filePreviews = [];
+            document.getElementById('fileInput').value = '';
+            updateFilePreviewArea();
+            input.value = '';
+            input.style.height = 'auto';
+        } else if (text) {
+            socket.emit('send_message', {
+                room_id: roomId,
+                channel_id: channelId,
+                msg: text,
+                message_type: 'text'
+            });
+            input.value = '';
+            input.style.height = 'auto';
+        }
+    }
+
+    function uploadAndSendFile(file, caption) {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/upload_file', {
+            method: 'POST',
+            body: formData
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const messageType = data.type;
+                socket.emit('send_message', {
+                    room_id: roomId,
+                    channel_id: channelId,
+                    msg: caption || '',
+                    message_type: messageType,
+                    file_url: data.url,
+                    file_name: data.filename || file.name,
+                    file_size: file.size
+                });
+            }
+        });
+    }
+
+    function deleteMessage(messageId) {
+        showConfirm('Удалить сообщение', 'Вы уверены, что хотите удалить это сообщение?', () => {
+            fetch(`/message/${messageId}/delete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const msgElement = document.querySelector(`[data-msg-id="${messageId}"]`);
+                    if (msgElement) {
+                        msgElement.remove();
+                    }
+                } else {
+                    showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+                }
+            });
+        });
+    }
+
+    function addMessageToChat(data) {
+        const div = document.createElement('div');
+        div.className = 'message';
+        div.setAttribute('data-msg-id', data.id || '');
+        
+        // Создаем структуру сообщения
+        div.innerHTML = `
+            <div class="avatar avatar-clickable" onclick="showProfile(${data.user_id || 0}, event)">
+                <img src="${data.avatar}">
+            </div>
+            <div class="msg-content" data-user-id="${data.user_id || 0}">
+                <div class="msg-meta">
+                    <span style="color: white; font-weight: bold; margin-right: 5px; cursor: pointer;" onclick="showProfile(${data.user_id || 0}, event)">${data.username}</span> 
+                    ${data.timestamp}
+                    ${data.edited_at ? '<span style="color: #72767d; font-size: 0.85em; margin-left: 5px;">(изменено)</span>' : ''}
+                </div>
+                <div class="msg-text"></div>
+            </div>
+        `;
+        
+        const msgTextDiv = div.querySelector('.msg-text');
+        
+        // Обрабатываем содержимое в зависимости от типа
+        if (data.message_type === 'sticker') {
+            const img = document.createElement('img');
+            img.src = data.file_url;
+            img.className = 'message-sticker';
+            img.onclick = () => showFullscreen(data.file_url);
+            msgTextDiv.appendChild(img);
+        } else if (data.message_type === 'image') {
+            const img = document.createElement('img');
+            img.src = data.file_url;
+            img.className = 'message-image';
+            img.onclick = () => showFullscreen(data.file_url);
+            msgTextDiv.appendChild(img);
+            if (data.msg) {
+                const textDiv = document.createElement('div');
+                textDiv.textContent = data.msg;
+                msgTextDiv.appendChild(textDiv);
+            }
+        } else if (data.message_type === 'music') {
+            const fileDiv = document.createElement('div');
+            fileDiv.className = 'message-file';
+            const audio = document.createElement('audio');
+            audio.controls = true;
+            audio.className = 'message-audio';
+            const source = document.createElement('source');
+            source.src = data.file_url;
+            source.type = 'audio/mpeg';
+            audio.appendChild(source);
+            fileDiv.appendChild(audio);
+            const downloadDiv = document.createElement('div');
+            downloadDiv.style.marginTop = '5px';
+            const downloadLink = document.createElement('a');
+            downloadLink.href = data.file_url;
+            downloadLink.download = '';
+            downloadLink.style.color = '#007bff';
+            downloadLink.textContent = 'Скачать';
+            downloadDiv.appendChild(downloadLink);
+            fileDiv.appendChild(downloadDiv);
+            if (data.msg) {
+                const textDiv = document.createElement('div');
+                textDiv.textContent = data.msg;
+                fileDiv.appendChild(textDiv);
+            }
+            msgTextDiv.appendChild(fileDiv);
+        } else if (data.message_type === 'file') {
+            const fileDiv = document.createElement('div');
+            fileDiv.className = 'message-file';
+            fileDiv.style.display = 'flex';
+            fileDiv.style.alignItems = 'center';
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'file-icon';
+            iconDiv.textContent = '📎';
+            fileDiv.appendChild(iconDiv);
+            const contentDiv = document.createElement('div');
+            contentDiv.style.flex = '1';
+            const fileNameDiv = document.createElement('div');
+            fileNameDiv.style.fontWeight = 'bold';
+            fileNameDiv.textContent = data.file_name || 'Файл';
+            contentDiv.appendChild(fileNameDiv);
+            const linksDiv = document.createElement('div');
+            linksDiv.style.fontSize = '0.8em';
+            linksDiv.style.color = '#aaa';
+            const previewLink = document.createElement('a');
+            previewLink.href = data.file_url;
+            previewLink.onclick = (e) => { e.preventDefault(); previewFile(data.file_url); return false; };
+            previewLink.style.color = '#007bff';
+            previewLink.style.marginRight = '10px';
+            previewLink.textContent = 'Предпросмотр';
+            linksDiv.appendChild(previewLink);
+            const downloadLink = document.createElement('a');
+            downloadLink.href = data.file_url;
+            downloadLink.download = '';
+            downloadLink.style.color = '#007bff';
+            downloadLink.textContent = 'Скачать';
+            linksDiv.appendChild(downloadLink);
+            contentDiv.appendChild(linksDiv);
+            fileDiv.appendChild(contentDiv);
+            msgTextDiv.appendChild(fileDiv);
+            if (data.msg) {
+                const textDiv = document.createElement('div');
+                textDiv.textContent = data.msg;
+                msgTextDiv.appendChild(textDiv);
+            }
+        } else {
+            // Обычный текст - используем textContent для сохранения переносов строк
+            // Нормализуем текст: убираем начальные переносы строк
+            let text = (data.msg || '').replace(/^\n+/, '').replace(/\n+$/, '');
+            // Убираем начальные пробелы из каждой строки
+            const lines = text.split('\n');
+            const cleanedLines = [];
+            let foundFirstNonEmpty = false;
+            for (let line of lines) {
+                if (line.trim()) {
+                    foundFirstNonEmpty = true;
+                }
+                if (foundFirstNonEmpty || line.trim()) {
+                    cleanedLines.push(line.trimStart());
+                }
+            }
+            // Убираем пустые строки в конце
+            while (cleanedLines.length > 0 && !cleanedLines[cleanedLines.length - 1].trim()) {
+                cleanedLines.pop();
+            }
+            msgTextDiv.textContent = cleanedLines.join('\n');
+        }
+        messagesDiv.appendChild(div);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+    
+    // Нормализуем текст в существующих сообщениях при загрузке страницы
+    function normalizeExistingMessages() {
+        const allMessages = messagesDiv.querySelectorAll('.msg-text');
+        allMessages.forEach(msgTextEl => {
+            if (msgTextEl.textContent && !msgTextEl.querySelector('img, audio, .message-file')) {
+                // Только для текстовых сообщений
+                let text = msgTextEl.textContent;
+                // Убираем начальные и конечные переносы строк
+                text = text.replace(/^\n+/, '').replace(/\n+$/, '');
+                // Убираем начальные пробелы из каждой строки
+                const lines = text.split('\n');
+                const cleanedLines = [];
+                let foundFirstNonEmpty = false;
+                for (let line of lines) {
+                    if (line.trim()) {
+                        foundFirstNonEmpty = true;
+                    }
+                    if (foundFirstNonEmpty || line.trim()) {
+                        cleanedLines.push(line.trimStart());
+                    }
+                }
+                // Убираем пустые строки в конце
+                while (cleanedLines.length > 0 && !cleanedLines[cleanedLines.length - 1].trim()) {
+                    cleanedLines.pop();
+                }
+                if (msgTextEl.textContent !== cleanedLines.join('\n')) {
+                    msgTextEl.textContent = cleanedLines.join('\n');
+                }
+            }
+        });
+    }
+    
+    // Нормализуем существующие сообщения при загрузке
+    normalizeExistingMessages();
+
+    function showFullscreen(url) {
+        document.getElementById('fullscreenImage').src = url;
+        document.getElementById('fullscreenOverlay').style.display = 'flex';
+    }
+
+    function previewFile(url) {
+        window.open(url, '_blank');
+    }
+
+    function showProfile(userId, event) {
+        if (event) {
+            event.stopPropagation();
+        }
+        fetch(`/profile/${userId}`)
+        .then(r => r.text())
+        .then(html => {
+            const modal = document.getElementById('profilePreview');
+            modal.innerHTML = html;
+            modal.style.display = 'block';
+            if (event) {
+                modal.style.left = (event.clientX + 10) + 'px';
+                modal.style.top = (event.clientY + 10) + 'px';
+            } else {
+                modal.style.left = '50%';
+                modal.style.top = '50%';
+                modal.style.transform = 'translate(-50%, -50%)';
+            }
+        });
+    }
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#profilePreview') && !e.target.closest('.avatar-clickable') && !e.target.closest('.msg-meta span')) {
+            document.getElementById('profilePreview').style.display = 'none';
+        }
+    });
+
+    function editChannel(id, name, description, emoji, iconUrl) {
+        document.getElementById('edit_channel_id').value = id;
+        document.getElementById('edit_channel_name').value = name;
+        document.getElementById('edit_channel_description').value = description || '';
+        document.getElementById('edit_channel_emoji').value = emoji || '';
+        document.getElementById('channelEditModal').style.display = 'block';
+    }
+
+    function saveChannelEdit(e) {
+        e.preventDefault();
+        const formData = new FormData();
+        formData.append('name', document.getElementById('edit_channel_name').value);
+        formData.append('description', document.getElementById('edit_channel_description').value);
+        formData.append('icon_emoji', document.getElementById('edit_channel_emoji').value);
+        
+        const iconFile = document.getElementById('edit_channel_icon').files[0];
+        if (iconFile) {
+            formData.append('icon_file', iconFile);
+        }
+        
+        const channelId = document.getElementById('edit_channel_id').value;
+        
+        fetch(`/room/${roomId}/channel/${channelId}/edit`, {
+            method: 'POST',
+            body: formData
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    }
+
+    function deleteChannel(channelId) {
+        showConfirm('Удалить канал', 'Вы уверены, что хотите удалить этот канал? Все сообщения будут удалены.', () => {
+            fetch(`/room/${roomId}/channel/${channelId}/delete`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    if (channelId == {{ active_channel_id }}) {
+                        window.location.href = "{{ url_for('view_room', room_id=room.id) }}";
+                    } else {
+                        location.reload();
+                    }
+                } else {
+                    showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+                }
+            });
+        });
+    }
+    
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    
+    // ========== СТИЛИЗОВАННЫЕ МОДАЛЬНЫЕ ОКНА ==========
+    let confirmCallback = null;
+    
+    function showConfirm(title, message, onConfirm, btnText = 'Подтвердить', btnClass = 'danger') {
+        document.getElementById('confirmTitle').textContent = title;
+        document.getElementById('confirmMessage').textContent = message;
+        const btn = document.getElementById('confirmBtn');
+        btn.textContent = btnText;
+        btn.className = `modal-btn modal-btn-${btnClass}`;
+        confirmCallback = onConfirm;
+        document.getElementById('confirmModal').style.display = 'flex';
+    }
+    
+    function closeConfirmModal(result) {
+        document.getElementById('confirmModal').style.display = 'none';
+        if (result && confirmCallback) {
+            confirmCallback();
+        }
+        confirmCallback = null;
+    }
+    
+    function showAlert(message) {
+        document.getElementById('alertMessage').textContent = message;
+        document.getElementById('alertModal').style.display = 'flex';
+    }
+    
+    function closeAlertModal() {
+        document.getElementById('alertModal').style.display = 'none';
+    }
+    
+    // Закрытие модальных окон по клику на overlay
+    document.getElementById('confirmModal').addEventListener('click', function(e) {
+        if (e.target === this) closeConfirmModal(false);
+    });
+    document.getElementById('alertModal').addEventListener('click', function(e) {
+        if (e.target === this) closeAlertModal();
+    });
+    
+    // ========== КОНТЕКСТНОЕ МЕНЮ ==========
+    let contextMenuMessageId = null;
+    let contextMenuMessageElement = null;
+    
+    document.addEventListener('contextmenu', function(e) {
+        const messageEl = e.target.closest('.message');
+        if (messageEl) {
+            e.preventDefault();
+            const msgId = messageEl.getAttribute('data-msg-id');
+            if (msgId) {
+                contextMenuMessageId = parseInt(msgId);
+                contextMenuMessageElement = messageEl;
+                showContextMenu(e.clientX, e.clientY);
+            }
+        }
+    });
+    
+    document.addEventListener('click', function() {
+        hideContextMenu();
+    });
+    
+    function showContextMenu(x, y) {
+        const menu = document.getElementById('messageContextMenu');
+        menu.style.display = 'block';
+        menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+        
+        // Показываем/скрываем пункты меню в зависимости от прав
+        const msgEl = contextMenuMessageElement;
+        const canEdit = msgEl && (msgEl.querySelector('.msg-content').dataset.userId == currentUserId);
+        const canDelete = msgEl && (canEdit || userRole == 'owner' || userRole == 'admin');
+        
+        menu.querySelectorAll('.context-menu-item')[1].style.display = canEdit ? 'flex' : 'none'; // Редактировать
+        menu.querySelectorAll('.context-menu-item')[4].style.display = canDelete ? 'flex' : 'none'; // Удалить
+    }
+    
+    function hideContextMenu() {
+        document.getElementById('messageContextMenu').style.display = 'none';
+    }
+    
+    function copyMessage() {
+        if (!contextMenuMessageElement) return;
+        const textEl = contextMenuMessageElement.querySelector('.msg-text');
+        if (textEl) {
+            const text = textEl.textContent || textEl.innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                showAlert('Сообщение скопировано в буфер обмена');
+            });
+        }
+        hideContextMenu();
+    }
+    
+    function editMessage() {
+        if (!contextMenuMessageId || !contextMenuMessageElement) return;
+        const textEl = contextMenuMessageElement.querySelector('.msg-text');
+        if (!textEl) return;
+        
+        const currentText = textEl.textContent;
+        
+        // Создаем модальное окно для редактирования
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.style.display = 'flex';
+        modal.innerHTML = `
+            <div class="modal">
+                <div class="modal-header">Редактировать сообщение</div>
+                <div class="modal-body">
+                    <textarea id="editMessageText" class="input-box" style="width: 100%; min-height: 100px; font-family: inherit;">${currentText}</textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn modal-btn-secondary" onclick="this.closest('.modal-overlay').remove()">Отмена</button>
+                    <button class="modal-btn modal-btn-primary" onclick="saveEditedMessage(${contextMenuMessageId})">Сохранить</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('editMessageText').focus();
+        document.getElementById('editMessageText').select();
+        
+        hideContextMenu();
+    }
+    
+    function saveEditedMessage(messageId) {
+        const textarea = document.getElementById('editMessageText');
+        const newText = textarea.value.trim();
+        const modal = textarea.closest('.modal-overlay');
+        
+        if (!newText) {
+            showAlert('Сообщение не может быть пустым');
+            return;
+        }
+        
+        fetch(`/message/${messageId}/edit`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({content: newText})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                modal.remove();
+                // Сообщение обновится через socket.on('message_edited')
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    }
+    
+    function forwardMessage() {
+        if (!contextMenuMessageId) return;
+        hideContextMenu();
+        
+        // Загружаем список доступных каналов
+        fetch('/channels/accessible')
+        .then(r => r.json())
+        .then(data => {
+            if (data.channels.length === 0) {
+                showAlert('Нет доступных каналов для пересылки');
+                return;
+            }
+            
+            // Создаем модальное окно для выбора канала
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.style.display = 'flex';
+            
+            let optionsHtml = '';
+            // Группируем по комнатам
+            const roomsMap = {};
+            data.channels.forEach(ch => {
+                if (!roomsMap[ch.room_id]) {
+                    roomsMap[ch.room_id] = {
+                        room_name: ch.room_name,
+                        room_type: ch.room_type,
+                        channels: []
+                    };
+                }
+                roomsMap[ch.room_id].channels.push(ch);
+            });
+            
+            for (const [roomId, roomData] of Object.entries(roomsMap)) {
+                optionsHtml += `<optgroup label="${roomData.room_name}">`;
+                roomData.channels.forEach(ch => {
+                    const prefix = roomData.room_type === 'dm' ? '💬' : '#';
+                    optionsHtml += `<option value="${ch.id}">${prefix} ${ch.name}</option>`;
+                });
+                optionsHtml += `</optgroup>`;
+            }
+            
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">Переслать сообщение</div>
+                    <div class="modal-body">
+                        <label style="display: block; margin-bottom: 5px;">Выберите канал:</label>
+                        <select id="forwardChannelSelect" class="input-box" style="width: 100%; margin-bottom: 15px;">
+                            ${optionsHtml}
+                        </select>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="modal-btn modal-btn-secondary" onclick="this.closest('.modal-overlay').remove()">Отмена</button>
+                        <button class="modal-btn modal-btn-primary" onclick="confirmForwardMessage(${contextMenuMessageId})">Переслать</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        });
+    }
+    
+    function confirmForwardMessage(messageId) {
+        const select = document.getElementById('forwardChannelSelect');
+        const channelId = select.value;
+        const modal = select.closest('.modal-overlay');
+        
+        fetch(`/message/${messageId}/forward`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({channel_id: parseInt(channelId)})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                modal.remove();
+                showAlert('Сообщение переслано');
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    }
+    
+    function deleteMessageFromMenu() {
+        if (!contextMenuMessageId) return;
+        hideContextMenu();
+        showConfirm('Удалить сообщение', 'Вы уверены, что хотите удалить это сообщение?', () => {
+            fetch(`/message/${contextMenuMessageId}/delete`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const msgElement = document.querySelector(`[data-msg-id="${contextMenuMessageId}"]`);
+                    if (msgElement) {
+                        msgElement.remove();
+                    }
+                } else {
+                    showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+                }
+            });
+        });
+    }
+    
+    
+    // ========== РЕАКЦИИ ==========
+    const commonEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏', '🎉', '💯', '😍', '🤔', '😴', '🤮', '💩'];
+    
+    function showReactionPicker() {
+        if (!contextMenuMessageId) return;
+        hideContextMenu();
+        const picker = document.getElementById('emojiPicker');
+        const grid = document.getElementById('emojiGrid');
+        grid.innerHTML = '';
+        
+        commonEmojis.forEach(emoji => {
+            const item = document.createElement('div');
+            item.className = 'emoji-item';
+            item.textContent = emoji;
+            item.onclick = () => {
+                toggleReaction(contextMenuMessageId, emoji);
+                picker.style.display = 'none';
+            };
+            grid.appendChild(item);
+        });
+        
+        const menu = document.getElementById('messageContextMenu');
+        picker.style.left = menu.style.left;
+        picker.style.top = (parseInt(menu.style.top) + 150) + 'px';
+        picker.style.display = 'block';
+    }
+    
+    function toggleReaction(messageId, emoji) {
+        fetch(`/message/${messageId}/reaction`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({emoji: emoji, reaction_type: 'emoji'})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                updateMessageReactions(messageId, data.reactions);
+            }
+        });
+    }
+    
+    function updateMessageReactions(messageId, reactions) {
+        const msgEl = document.querySelector(`[data-msg-id="${messageId}"]`);
+        if (!msgEl) return;
+        
+        let reactionsEl = msgEl.querySelector('.message-reactions');
+        if (!reactionsEl) {
+            reactionsEl = document.createElement('div');
+            reactionsEl.className = 'message-reactions';
+            const msgContent = msgEl.querySelector('.msg-content');
+            msgContent.appendChild(reactionsEl);
+        }
+        
+        reactionsEl.innerHTML = '';
+        if (!reactions || Object.keys(reactions).length === 0) {
+            reactionsEl.remove();
+            return;
+        }
+        
+        for (const [emoji, users] of Object.entries(reactions)) {
+            const reaction = document.createElement('div');
+            reaction.className = 'reaction';
+            if (users.includes(currentUsername)) {
+                reaction.classList.add('active');
+            }
+            reaction.onclick = () => toggleReaction(messageId, emoji);
+            reaction.innerHTML = `
+                <span class="reaction-emoji">${emoji}</span>
+                <span class="reaction-count">${users.length}</span>
+            `;
+            reactionsEl.appendChild(reaction);
+        }
+    }
+    
+    socket.on('reactions_updated', function(data) {
+        updateMessageReactions(data.message_id, data.reactions);
+    });
+    
+    // Обработчик редактирования сообщения
+    socket.on('message_edited', function(data) {
+        const msgEl = document.querySelector(`[data-msg-id="${data.message_id}"]`);
+        if (msgEl) {
+            const textEl = msgEl.querySelector('.msg-text');
+            if (textEl) {
+                // Убираем все дочерние элементы (textarea, кнопки и т.д.)
+                textEl.innerHTML = '';
+                textEl.textContent = data.content;
+                normalizeMessageText(msgEl);
+            }
+            const metaEl = msgEl.querySelector('.msg-meta');
+            if (metaEl && data.edited_at) {
+                // Удаляем старую метку если есть
+                const oldEdited = metaEl.querySelector('span[style*="изменено"]');
+                if (oldEdited) oldEdited.remove();
+                
+                const editedSpan = document.createElement('span');
+                editedSpan.style.color = '#72767d';
+                editedSpan.style.fontSize = '0.85em';
+                editedSpan.style.marginLeft = '5px';
+                editedSpan.textContent = '(изменено)';
+                metaEl.appendChild(editedSpan);
+            }
+            // Обновляем реакции
+            if (data.reactions) {
+                updateMessageReactions(data.message_id, data.reactions);
+            }
+            
+            // Обновляем ссылку на элемент в контекстном меню, если это то же сообщение
+            if (contextMenuMessageId === data.message_id) {
+                contextMenuMessageElement = msgEl;
+            }
+        }
+    });
+    
+    // ========== СТИКЕРЫ ==========
+    function loadStickerPacks() {
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const container = document.getElementById('stickerPacksContainer');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            
+            data.packs.forEach(pack => {
+                const packIcon = document.createElement('div');
+                packIcon.className = 'server-icon';
+                packIcon.title = pack.name;
+                packIcon.textContent = pack.icon_emoji || '📦';
+                packIcon.onclick = () => showStickerPack(pack.id, pack.name);
+                packIcon.style.cursor = 'pointer';
+                packIcon.style.position = 'relative';
+                
+                // Кнопка редактирования при наведении
+                const editBtn = document.createElement('button');
+                editBtn.textContent = '✏️';
+                editBtn.style.position = 'absolute';
+                editBtn.style.top = '-5px';
+                editBtn.style.right = '-5px';
+                editBtn.style.background = '#5865f2';
+                editBtn.style.border = 'none';
+                editBtn.style.borderRadius = '50%';
+                editBtn.style.width = '20px';
+                editBtn.style.height = '20px';
+                editBtn.style.fontSize = '10px';
+                editBtn.style.cursor = 'pointer';
+                editBtn.style.display = 'none';
+                editBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    editStickerPack(pack.id, pack.name, pack.icon_emoji);
+                };
+                packIcon.onmouseenter = () => editBtn.style.display = 'block';
+                packIcon.onmouseleave = () => editBtn.style.display = 'none';
+                packIcon.appendChild(editBtn);
+                
+                container.appendChild(packIcon);
+            });
+        });
+    }
+    
+    function editStickerPack(packId, currentName, currentEmoji) {
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const pack = data.packs.find(p => p.id === packId);
+            if (!pack) return;
+            
+            const content = document.getElementById('editStickerPackContent');
+            content.innerHTML = `
+                <div style="margin-bottom: 15px;">
+                    <h4>${pack.name}</h4>
+                    <p style="color: #72767d; font-size: 0.9em;">Стикеров: ${pack.stickers.length}</p>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <button class="btn" onclick="addStickerToPack(${packId})" style="width: 100%; margin-bottom: 10px;">Добавить стикер</button>
+                    ${pack.stickers.length > 0 ? `<button class="btn btn-red" onclick="showDeleteStickerModal(${packId})" style="width: 100%; margin-bottom: 10px;">Удалить стикер</button>` : ''}
+                    <button class="btn btn-red" onclick="deleteStickerPackConfirm(${packId})" style="width: 100%;">Удалить стикерпак</button>
+                </div>
+                ${pack.stickers.length > 0 ? `
+                <div style="max-height: 300px; overflow-y: auto;">
+                    <h5>Стикеры в паке:</h5>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px;">
+                        ${pack.stickers.map(s => `
+                            <div style="text-align: center;">
+                                <img src="${s.url}" style="width: 80px; height: 80px; object-fit: contain; border-radius: 4px;">
+                                <div style="font-size: 0.8em; color: #72767d; margin-top: 5px;">${s.name}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                ` : ''}
+            `;
+            document.getElementById('editStickerPackModal').style.display = 'flex';
+        });
+    }
+    
+    function addStickerToPack(packId) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            showInputModal('Название стикера', 'Введите название стикера:', (name) => {
+                if (!name) return;
+                
+                const formData = new FormData();
+                formData.append('sticker_file', file);
+                formData.append('name', name);
+                
+                fetch(`/stickerpack/${packId}/add`, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        loadStickerPacks();
+                        editStickerPack(packId);
+                        showAlert('Стикер добавлен!');
+                    } else {
+                        showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+                    }
+                });
+            });
+        };
+        input.click();
+    }
+    
+    function showDeleteStickerModal(packId) {
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const pack = data.packs.find(p => p.id === packId);
+            if (!pack || pack.stickers.length === 0) {
+                showAlert('В этом стикерпаке нет стикеров');
+                return;
+            }
+            
+            const content = document.getElementById('editStickerPackContent');
+            content.innerHTML = `
+                <h4>Удалить стикер</h4>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 15px 0;">
+                    ${pack.stickers.map((s, i) => `
+                        <div style="text-align: center; cursor: pointer; padding: 10px; border-radius: 4px; border: 1px solid #4f545c;" onclick="deleteSticker(${s.id}, ${packId})">
+                            <img src="${s.url}" style="width: 80px; height: 80px; object-fit: contain;">
+                            <div style="font-size: 0.8em; color: #72767d; margin-top: 5px;">${s.name}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <button class="btn modal-btn-secondary" onclick="editStickerPack(${packId})" style="width: 100%;">Назад</button>
+            `;
+        });
+    }
+    
+    function deleteSticker(stickerId, packId) {
+        showConfirm('Удалить стикер', 'Вы уверены, что хотите удалить этот стикер?', () => {
+            fetch(`/sticker/${stickerId}/delete`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadStickerPacks();
+                    editStickerPack(packId);
+                    showAlert('Стикер удален!');
+                }
+            });
+        });
+    }
+    
+    function deleteStickerPackConfirm(packId) {
+        showConfirm('Удалить стикерпак', 'Вы уверены? Все стикеры в этом паке будут удалены.', () => {
+            fetch(`/stickerpack/${packId}/delete`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadStickerPacks();
+                    closeModal('editStickerPackModal');
+                    showAlert('Стикерпак удален!');
+                }
+            });
+        });
+    }
+    
+    function closeModal(modalId) {
+        document.getElementById(modalId).style.display = 'none';
+    }
+    
+    function showInputModal(title, message, onConfirm) {
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.style.display = 'flex';
+        modal.innerHTML = `
+            <div class="modal">
+                <div class="modal-header">${title}</div>
+                <div class="modal-body">
+                    <p>${message}</p>
+                    <input type="text" id="inputModalValue" class="input-box" style="width: 100%;">
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn modal-btn-secondary" onclick="this.closest('.modal-overlay').remove()">Отмена</button>
+                    <button class="modal-btn modal-btn-primary" onclick="
+                        const value = document.getElementById('inputModalValue').value;
+                        this.closest('.modal-overlay').remove();
+                        if (value && typeof onConfirm === 'function') {
+                            onConfirm(value);
+                        }
+                    ">ОК</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('inputModalValue').focus();
+        document.getElementById('inputModalValue').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                modal.querySelector('.modal-btn-primary').click();
+            }
+        });
+    }
+    
+    function showStickerPack(packId, packName) {
+        // Показываем стикеры из этого пака в стикер-пикере
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const pack = data.packs.find(p => p.id === packId);
+            if (!pack) return;
+            
+            const grid = document.getElementById('stickerGrid');
+            grid.innerHTML = '';
+            
+            pack.stickers.forEach(sticker => {
+                const item = document.createElement('div');
+                item.className = 'sticker-item';
+                const img = document.createElement('img');
+                img.src = sticker.url;
+                img.onclick = () => sendSticker(sticker.url);
+                item.appendChild(img);
+                grid.appendChild(item);
+            });
+            
+            const picker = document.getElementById('stickerPicker');
+            picker.style.display = 'block';
+            picker.style.left = '20px';
+            picker.style.top = (window.innerHeight - 450) + 'px';
+        });
+    }
+    
+    function sendSticker(stickerUrl) {
+        socket.emit('send_message', {
+            room_id: roomId,
+            channel_id: channelId,
+            msg: '',
+            message_type: 'sticker',
+            file_url: stickerUrl
+        });
+        document.getElementById('stickerPicker').style.display = 'none';
+    }
+    
+    
+    function toggleStickerPicker() {
+        const picker = document.getElementById('stickerPicker');
+        const isVisible = picker.style.display === 'block';
+        document.getElementById('emojiPicker').style.display = 'none';
+        if (isVisible) {
+            picker.style.display = 'none';
+        } else {
+            picker.style.display = 'block';
+            picker.style.left = '20px';
+            picker.style.top = (window.innerHeight - 450) + 'px';
+            loadStickerPacksForPicker();
+        }
+    }
+    
+    function loadStickerPacksForPicker() {
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const packList = document.getElementById('stickerPackList');
+            const grid = document.getElementById('stickerGrid');
+            
+            packList.innerHTML = '';
+            grid.innerHTML = '';
+            
+            if (data.packs.length === 0) {
+                grid.innerHTML = '<div style="text-align: center; color: #72767d; padding: 20px;">Нет стикерпаков. Создайте стикерпак в sidebar!</div>';
+                return;
+            }
+            
+            // Создаем список стикерпаков сверху
+            data.packs.forEach((pack, index) => {
+                const packBtn = document.createElement('button');
+                packBtn.className = 'sticker-pack-btn';
+                packBtn.textContent = pack.icon_emoji || '📦';
+                packBtn.title = pack.name;
+                packBtn.style.cssText = 'background: #2f3136; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 1.2em;';
+                packBtn.onclick = () => showStickerPackInPicker(pack.id);
+                if (index === 0) {
+                    packBtn.style.background = '#5865f2';
+                    showStickerPackInPicker(pack.id);
+                }
+                packList.appendChild(packBtn);
+            });
+        });
+    }
+    
+    function showStickerPackInPicker(packId) {
+        fetch('/stickerpacks')
+        .then(r => r.json())
+        .then(data => {
+            const pack = data.packs.find(p => p.id === packId);
+            if (!pack) return;
+            
+            const grid = document.getElementById('stickerGrid');
+            grid.innerHTML = '';
+            
+            // Подсвечиваем выбранный стикерпак
+            document.querySelectorAll('.sticker-pack-btn').forEach((btn, i) => {
+                const p = data.packs[i];
+                if (p && p.id === packId) {
+                    btn.style.background = '#5865f2';
+                } else {
+                    btn.style.background = '#2f3136';
+                }
+            });
+            
+            pack.stickers.forEach(sticker => {
+                const item = document.createElement('div');
+                item.className = 'sticker-item';
+                const img = document.createElement('img');
+                img.src = sticker.url;
+                img.onclick = () => sendSticker(sticker.url);
+                item.appendChild(img);
+                grid.appendChild(item);
+            });
+        });
+    }
+    
+    // Закрываем пикеры при клике вне их
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#stickerPicker') && !e.target.closest('button[onclick*="toggleStickerPicker"]')) {
+            document.getElementById('stickerPicker').style.display = 'none';
+        }
+        if (!e.target.closest('#emojiPicker') && !e.target.closest('.context-menu-item')) {
+            document.getElementById('emojiPicker').style.display = 'none';
+        }
+    });
+    
+    function inviteToRoom(roomId) {
+        fetch(`/room/${roomId}/invite`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                navigator.clipboard.writeText(data.invite_url).then(() => {
+                    showAlert('Ссылка-приглашение скопирована в буфер обмена!');
+                }).catch(() => {
+                    // Fallback если clipboard API не работает
+                    const textarea = document.createElement('textarea');
+                    textarea.value = data.invite_url;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        showAlert('Ссылка-приглашение скопирована в буфер обмена!');
+                    } catch (err) {
+                        showAlert('Ссылка: ' + data.invite_url);
+                    }
+                    document.body.removeChild(textarea);
+                });
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    }
+</script>
+
+{% endblock %}

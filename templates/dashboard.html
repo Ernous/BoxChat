@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+    .context-menu {
+        position: fixed;
+        background: #18191c;
+        border-radius: 4px;
+        padding: 4px;
+        min-width: 200px;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.24);
+        z-index: 10004;
+        display: none;
+    }
+    .context-menu-item {
+        padding: 8px 12px;
+        color: #b9bbbe;
+        cursor: pointer;
+        border-radius: 2px;
+        font-size: 0.9em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .context-menu-item:hover {
+        background: #5865f2;
+        color: white;
+    }
+    .context-menu-item.danger:hover {
+        background: #d83c3e;
+    }
+    .unread-badge {
+        background: #f04747;
+        color: white;
+        border-radius: 10px;
+        padding: 2px 6px;
+        font-size: 0.75em;
+        min-width: 18px;
+        text-align: center;
+    }
+</style>
+<div class="panel" style="width: 100%;">
+    <div class="panel-header">Личные сообщения</div>
+    <div class="channel-list" id="dmList">
+        {% for dm_info in dms %}
+            <div class="dm-item-wrapper" style="position: relative;">
+                <a href="{{ url_for('view_room', room_id=dm_info.room.id) }}" class="channel-item dm-item" data-room-id="{{ dm_info.room.id }}" style="display: flex; align-items: center; gap: 10px; position: relative;">
+                    {% if dm_info.other_user %}
+                        <img src="{{ dm_info.other_user.avatar_url }}" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover;">
+                        <span style="flex: 1;">{{ dm_info.other_user.username }}</span>
+                        {% if dm_info.unread_count > 0 %}
+                            <span class="unread-badge" style="background: #f04747; color: white; border-radius: 10px; padding: 2px 6px; font-size: 0.75em; min-width: 18px; text-align: center;">{{ dm_info.unread_count }}</span>
+                        {% endif %}
+                    {% else %}
+                        <span>Неизвестный пользователь</span>
+                    {% endif %}
+                </a>
+            </div>
+        {% endfor %}
+    </div>
+    
+    <div class="panel-header" style="border-top: 1px solid #202225; margin-top: 20px;">Серверы</div>
+    <div class="channel-list">
+        {% for server_info in servers %}
+            <div class="server-item-wrapper" style="position: relative;">
+                <a href="{{ url_for('view_room', room_id=server_info.room.id) }}" class="channel-item server-item" data-room-id="{{ server_info.room.id }}" data-role="{{ server_info.role }}" style="display: flex; align-items: center; gap: 10px;">
+                    {% if server_info.room.avatar_url %}
+                        <img src="{{ server_info.room.avatar_url }}" style="width: 30px; height: 30px; border-radius: 50%; object-fit: cover;">
+                    {% else %}
+                        <div style="width: 30px; height: 30px; border-radius: 50%; background: #36393f; display: flex; align-items: center; justify-content: center; font-size: 0.8em;">{{ server_info.room.name[:2] }}</div>
+                    {% endif %}
+                    <span>{{ server_info.room.name }}</span>
+                </a>
+            </div>
+        {% endfor %}
+    </div>
+    
+    <!-- Контекстное меню для ЛС -->
+    <div id="dmContextMenu" class="context-menu" style="display: none;">
+        <div class="context-menu-item danger" onclick="deleteDM()">Удалить переписку</div>
+    </div>
+    
+    <!-- Контекстное меню для сервера -->
+    <div id="serverContextMenu" class="context-menu" style="display: none;">
+        <div class="context-menu-item" onclick="inviteToServer()">Пригласить</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item danger" onclick="deleteServer()">Удалить сервер</div>
+        <div class="context-menu-item danger" onclick="leaveServer()">Покинуть сервер</div>
+    </div>
+    
+<script>
+let contextMenuServerId = null;
+let contextMenuServerRole = null;
+
+let contextMenuDMId = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Обработчик ПКМ на серверы
+    document.querySelectorAll('.server-item').forEach(item => {
+        item.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            contextMenuServerId = parseInt(this.dataset.roomId);
+            contextMenuServerRole = this.dataset.role;
+            
+            const menu = document.getElementById('serverContextMenu');
+            menu.style.display = 'block';
+            menu.style.left = Math.min(e.clientX, window.innerWidth - 220) + 'px';
+            menu.style.top = Math.min(e.clientY, window.innerHeight - 200) + 'px';
+            
+            // Показываем/скрываем пункты меню в зависимости от роли
+            const canInvite = contextMenuServerRole === 'owner' || contextMenuServerRole === 'admin';
+            const canDelete = contextMenuServerRole === 'owner' || contextMenuServerRole === 'admin';
+            menu.querySelectorAll('.context-menu-item')[0].style.display = canInvite ? 'flex' : 'none'; // Пригласить
+            menu.querySelectorAll('.context-menu-item')[2].style.display = canDelete ? 'flex' : 'none'; // Удалить
+            menu.querySelectorAll('.context-menu-item')[3].style.display = contextMenuServerRole !== 'owner' ? 'flex' : 'none'; // Покинуть
+        });
+    });
+    
+    // Обработчик ПКМ на ЛС
+    document.querySelectorAll('.dm-item').forEach(item => {
+        item.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            contextMenuDMId = parseInt(this.dataset.roomId);
+            
+            const menu = document.getElementById('dmContextMenu');
+            menu.style.display = 'block';
+            menu.style.left = Math.min(e.clientX, window.innerWidth - 220) + 'px';
+            menu.style.top = Math.min(e.clientY, window.innerHeight - 200) + 'px';
+        });
+    });
+    
+    document.addEventListener('click', function() {
+        document.getElementById('serverContextMenu').style.display = 'none';
+        document.getElementById('dmContextMenu').style.display = 'none';
+    });
+});
+
+function deleteServer() {
+    if (!contextMenuServerId) return;
+    showConfirm('Удалить сервер', 'Вы уверены? Все данные сервера будут удалены безвозвратно.', () => {
+        fetch(`/room/${contextMenuServerId}/delete`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    });
+    document.getElementById('serverContextMenu').style.display = 'none';
+}
+
+function leaveServer() {
+    if (!contextMenuServerId) return;
+    showConfirm('Покинуть сервер', 'Вы уверены, что хотите покинуть этот сервер?', () => {
+        fetch(`/room/${contextMenuServerId}/leave`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    });
+    document.getElementById('serverContextMenu').style.display = 'none';
+}
+
+function inviteToServer() {
+    if (!contextMenuServerId) return;
+    fetch(`/room/${contextMenuServerId}/invite`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            navigator.clipboard.writeText(data.invite_url).then(() => {
+                showAlert('Ссылка-приглашение скопирована в буфер обмена!');
+            }).catch(() => {
+                // Fallback если clipboard API не работает
+                const textarea = document.createElement('textarea');
+                textarea.value = data.invite_url;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    showAlert('Ссылка-приглашение скопирована в буфер обмена!');
+                } catch (err) {
+                    showAlert('Ссылка: ' + data.invite_url);
+                }
+                document.body.removeChild(textarea);
+            });
+        } else {
+            showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+        }
+    });
+    document.getElementById('serverContextMenu').style.display = 'none';
+}
+
+function deleteDM() {
+    if (!contextMenuDMId) return;
+    showConfirm('Удалить переписку', 'Вы уверены, что хотите удалить эту переписку?', () => {
+        fetch(`/room/${contextMenuDMId}/delete_dm`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                showAlert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        });
+    });
+    document.getElementById('dmContextMenu').style.display = 'none';
+}
+
+// Функции для модальных окон
+function showAlert(message) {
+    alert(message); // Временно используем стандартный alert
+}
+
+function showConfirm(title, message, onConfirm) {
+    if (confirm(title + '\n\n' + message)) {
+        onConfirm();
+    }
+}
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+// Подключаемся к Socket.IO для обновления списка ЛС в реальном времени
+const socket = io();
+
+// Подключаемся к персональной комнате
+socket.on('connect', function() {
+    socket.emit('join', {channel_id: null}); // Для персональной комнаты
+});
+
+// Обработчик нового ЛС
+socket.on('new_dm_created', function(data) {
+    // Обновляем страницу или добавляем новый элемент в список
+    location.reload(); // Пока просто обновляем страницу
+});
+
+// Обработчик нового сообщения в ЛС
+socket.on('new_dm_message', function(data) {
+    // Обновляем счётчик непрочитанных или добавляем новый ЛС в список
+    const dmItem = document.querySelector(`.dm-item[data-room-id="${data.room_id}"]`);
+    if (dmItem) {
+        // Обновляем счётчик непрочитанных
+        let badge = dmItem.querySelector('.unread-badge');
+        if (badge) {
+            badge.textContent = parseInt(badge.textContent) + 1;
+        } else {
+            badge = document.createElement('span');
+            badge.className = 'unread-badge';
+            badge.style.cssText = 'background: #f04747; color: white; border-radius: 10px; padding: 2px 6px; font-size: 0.75em; min-width: 18px; text-align: center;';
+            badge.textContent = '1';
+            dmItem.appendChild(badge);
+        }
+        // Перемещаем наверх
+        const dmList = document.getElementById('dmList');
+        if (dmList) {
+            dmList.insertBefore(dmItem, dmList.firstChild);
+        }
+    } else {
+        // Новый ЛС - обновляем страницу
+        location.reload();
+    }
+});
+</script>
+    
+</div>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="main" style="padding: 20px;">
+    <h2>Поиск</h2>
+    <form style="display: flex; gap: 10px; margin-bottom: 20px;">
+        <input type="text" name="q" value="{{ query }}" placeholder="Поиск людей или групп..." class="input-box">
+        <button class="btn">Искать</button>
+    </form>
+
+    <h3>Комнаты</h3>
+    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
+        {% for room in rooms %}
+        <div style="background: #2f3136; padding: 15px; border-radius: 8px; width: 200px;">
+            {% if room.avatar_url %}
+            <img src="{{ room.avatar_url }}" style="width: 50px; height: 50px; border-radius: 50%; object-fit: cover; margin-bottom: 10px;">
+            {% endif %}
+            <h4>{{ room.name }}</h4>
+            <p style="font-size: 0.8em; color: #aaa;">{{ room.type }}</p>
+            <a href="{{ url_for('join_room_view', room_id=room.id) }}" class="btn">Вступить</a>
+        </div>
+        {% endfor %}
+    </div>
+
+    <h3>Люди</h3>
+    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+        {% for u in users %}
+        <div style="background: #2f3136; padding: 15px; border-radius: 8px; display: flex; align-items: center; gap: 10px;">
+            <div class="avatar"><img src="{{ u.avatar_url }}"></div>
+            <div>
+                <div>{{ u.username }}</div>
+                {% if u.id != current_user.id %}
+                <a href="{{ url_for('start_dm', user_id=u.id) }}" style="font-size: 0.8em; color: #007bff;">Написать</a>
+                {% endif %}
+                
+                {% if current_user.is_superuser %}
+                 <br><span style="color: red; font-size: 0.7em;">[ADMIN: Ban]</span>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
