@@ -16,10 +16,10 @@ venv:
 python -m venv boxchat-venv
 
 # Windows
-venv\Scripts\activate
+boxchat-venv\Scripts\activate
 
 # Linux/macOS
-source venv/bin/activate
+source boxchat-venv/bin/activate
 
 # Installing dependencies
 pip install --upgrade pip
