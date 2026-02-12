@@ -5,7 +5,7 @@ BoxChat is a simple, self-hosted messenger application.
 ## Stack
 
 - **Backend:** Python, Flask, Socket.IO, JavaScript
-- **Frontend:** HTML, CSS, JavaScript
+- **Frontend:** Vite, React, MaterialUI
 
 ## Credits
 
