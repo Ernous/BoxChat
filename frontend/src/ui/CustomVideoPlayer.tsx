@@ -14,6 +14,12 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
   const [hover, setHover] = useState(false)
   const [fsOpen, setFsOpen] = useState(false)
   const [fsHover, setFsHover] = useState(false)
+  const fsOpenRef = useRef(false)
+
+  function getActiveVideo(): HTMLVideoElement | null {
+    if (fsOpenRef.current && fsVideoRef.current) return fsVideoRef.current
+    return videoRef.current
+  }
 
   async function downloadNow() {
     try {
@@ -40,11 +46,9 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
   }, [progress, duration])
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
-    const v = video
-
-    v.muted = muted
+    const active = getActiveVideo()
+    if (!active) return
+    const v = active
 
     function onTime() {
       setProgress(v.currentTime || 0)
@@ -68,6 +72,7 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
     v.addEventListener('loadedmetadata', onMeta)
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
+    onTime()
 
     return () => {
       v.removeEventListener('timeupdate', onTime)
@@ -75,23 +80,24 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
     }
-  }, [])
+  }, [fsOpen])
 
   useEffect(() => {
-    const v = videoRef.current
-    if (!v) return
-    v.muted = muted
+    const inline = videoRef.current
+    const fs = fsVideoRef.current
+    if (inline) inline.muted = muted
+    if (fs) fs.muted = muted
   }, [muted])
 
   function toggle() {
-    const v = videoRef.current
+    const v = getActiveVideo()
     if (!v) return
     if (v.paused) void v.play()
     else v.pause()
   }
 
   function seek(clientX: number, barEl: HTMLDivElement) {
-    const v = videoRef.current
+    const v = getActiveVideo()
     if (!v || !duration) return
     const rect = barEl.getBoundingClientRect()
     const pct = (clientX - rect.left) / rect.width
@@ -101,19 +107,27 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
   function openFs() {
     const v = videoRef.current
     if (!v) return
+    fsOpenRef.current = true
     setFsOpen(true)
   }
 
   function closeFs() {
     const inline = videoRef.current
     const fs = fsVideoRef.current
+    fsOpenRef.current = false
     if (inline && fs) {
+      const wasPlaying = !fs.paused
       inline.currentTime = fs.currentTime || 0
       inline.muted = fs.muted
-      if (playing) void inline.play()
+      if (wasPlaying) void inline.play()
+      else inline.pause()
     }
     setFsOpen(false)
   }
+
+  useEffect(() => {
+    fsOpenRef.current = fsOpen
+  }, [fsOpen])
 
   useEffect(() => {
     if (!fsOpen) return
@@ -128,7 +142,12 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
 
     fs.muted = inline.muted
     fs.currentTime = t
-    if (wasPlaying) void fs.play()
+    if (wasPlaying) {
+      void fs.play()
+      setPlaying(true)
+    } else {
+      setPlaying(false)
+    }
 
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') closeFs()
@@ -137,6 +156,35 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+    }
+  }, [fsOpen])
+
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      if (!(target instanceof HTMLElement)) return false
+      const tag = target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      return Boolean(target.closest('[contenteditable="true"]'))
+    }
+
+    function onGlobalKeyDown(e: KeyboardEvent) {
+      if (e.code !== 'Space') return
+      if (isTypingTarget(e.target)) return
+
+      const root = rootRef.current
+      const active = document.activeElement
+      const focusedInsidePlayer = Boolean(root && active && root.contains(active))
+
+      // In fullscreen always handle Space; inline only when player is focused.
+      if (!fsOpen && !focusedInsidePlayer) return
+
+      e.preventDefault()
+      toggle()
+    }
+
+    window.addEventListener('keydown', onGlobalKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onGlobalKeyDown)
     }
   }, [fsOpen])
 
@@ -220,6 +268,13 @@ export default function CustomVideoPlayer({ src }: { src: string }) {
     >
       <Box
         sx={{ position: 'relative' }}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.code === 'Space') {
+            e.preventDefault()
+            toggle()
+          }
+        }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
