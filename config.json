@@ -2,7 +2,7 @@
   "SQLALCHEMY_DATABASE_URI": "sqlite:///thecomboxmsgr.db",
   "SQLALCHEMY_TRACK_MODIFICATIONS": false,
   "SECRET_KEY": "super_secret_key_v2",
-  "GIPHY_API_KEY": "cI5F1kyPgrDlAbD8XjzwUm0dXGFjF1JZ",
+  "GIPHY_API_KEY": "key",
   "UPLOAD_FOLDER": "uploads",
   "MAX_CONTENT_LENGTH": 429996729699999999999,
   "ALLOWED_EXTENSIONS": [
