@@ -40,10 +40,10 @@ boxchat-venv\Scripts\activate
 # On Linux/macOS:
 source boxchat-venv/bin/activate
 
-# Install dependencies
+# Install dependencies and build frontend
 pip install --upgrade pip
 pip install -r requirements.txt
-npm install
+cd frontend && npm install && npm run build
 
 # Start the server
 python run.py
