@@ -1,24 +1,120 @@
 # API routes (uploads, settings, channel management, message actions)
 
 import os
+import re
+import inspect
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, flash, send_from_directory, current_app
 from flask_login import login_required, current_user
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime
+from sqlalchemy import or_, and_, func
 from app.extensions import db, socketio
 from app.models import (
     User, Room, Channel, Member, Message, UserMusic,
-    MessageReaction, ReadMessage, RoomBan
+    MessageReaction, ReadMessage, RoomBan, Role, MemberRole, RoleMentionPermission
 )
-from app.functions import save_uploaded_file, resize_image, is_image_file, is_music_file, is_video_file
+from app.functions import (
+    save_uploaded_file, resize_image, is_image_file, is_music_file, is_video_file,
+    normalize_role_tag, ensure_default_roles, ensure_user_default_roles, can_user_mention_role
+)
+from app.routes.spa import send_spa_index
+from app.routes.api_friends import register_friends_routes
+from app.routes.api_search import register_search_routes
 
 api_bp = Blueprint('api', __name__)
+
+register_friends_routes(api_bp)
+register_search_routes(api_bp)
+
+
+def _get_giphy_key():
+    try:
+        from config import GIPHY_API_KEY
+    except Exception:
+        GIPHY_API_KEY = ''
+    return os.environ.get('GIPHY_API_KEY') or (GIPHY_API_KEY or '')
+
+
+def _serialize_giphy_item(g):
+    try:
+        gid = str(getattr(g, 'id', '') or '')
+        title = str(getattr(g, 'title', '') or '')
+        images = getattr(g, 'images', None)
+        original = getattr(images, 'original', None) if images else None
+        fixed = getattr(images, 'fixed_width_small', None) if images else None
+        preview = getattr(images, 'preview_gif', None) if images else None
+        url = getattr(original, 'url', None) if original else None
+        prev = (
+            (getattr(fixed, 'url', None) if fixed else None)
+            or (getattr(preview, 'url', None) if preview else None)
+            or url
+        )
+        if not url or not prev:
+            return None
+        return {
+            'id': gid,
+            'url': str(url),
+            'preview': str(prev),
+            'title': title,
+        }
+    except Exception:
+        return None
+
+
+def _giphy_call_with_optional_offset(api_instance, method_name: str, api_key: str, *, limit: int, offset: int, rating: str, q: str | None = None):
+    method = getattr(api_instance, method_name)
+    try:
+        sig = inspect.signature(method)
+        params = sig.parameters
+        kwargs = {'limit': limit, 'rating': rating}
+        if 'offset' in params:
+            kwargs['offset'] = offset
+        if q is not None and 'q' in params:
+            kwargs['q'] = q
+        # Some generated clients include q as positional 2nd arg (search)
+        if q is not None:
+            try:
+                return method(api_key, q, **kwargs)
+            except TypeError:
+                return method(api_key, **kwargs)
+        return method(api_key, **kwargs)
+    except TypeError:
+        pass
+
+    # Fallback for older giphy-client versions: call through SDK ApiClient
+    path = '/gifs/trending' if method_name == 'gifs_trending_get' else '/gifs/search'
+    query_params = [('api_key', api_key), ('limit', int(limit)), ('rating', rating), ('offset', int(offset))]
+    if q is not None:
+        query_params.append(('q', q))
+
+    # response_type varies between versions; try common ones.
+    for response_type in ('InlineResponse200', 'object', None):
+        try:
+            return api_instance.api_client.call_api(
+                path,
+                'GET',
+                query_params=query_params,
+                response_type=response_type,
+                auth_settings=[],
+                _return_http_data_only=True,
+            )
+        except Exception:
+            continue
+
+    raise RuntimeError('Giphy SDK call failed')
 
 # Helper functions
 def get_role(user_id, room_id):
     # Get user role in room
     member = Member.query.filter_by(user_id=user_id, room_id=room_id).first()
     return member.role if member else None
+
+
+def has_room_admin_access(user_id, room):
+    if not room:
+        return False
+    member = Member.query.filter_by(user_id=user_id, room_id=room.id).first()
+    return bool(member and member.role in ['owner', 'admin'])
 
 
 def save_file(file, subfolder='files'):
@@ -29,6 +125,26 @@ def save_file(file, subfolder='files'):
 def get_upload_folder():
     # Get upload folder from current app config
     return current_app.config.get('UPLOAD_FOLDER', 'uploads')
+
+
+def _wants_json():
+    if request.is_json:
+        return True
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    accept = request.headers.get('Accept', '')
+    return 'application/json' in accept
+
+
+def _emit_presence_update_for_user(user):
+    memberships = Member.query.filter_by(user_id=user.id).all()
+    for m in memberships:
+        for ch in m.room.channels:
+            socketio.emit('presence_updated', {
+                'user_id': user.id,
+                'username': user.username,
+                'status': user.presence_status
+            }, room=str(ch.id), skip_sid=None)
 
 # --- CHANNEL MANAGEMENT ---
 
@@ -97,50 +213,110 @@ def delete_channel(room_id, channel_id):
 @api_bp.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
-    # User settings page
-    if request.method == 'POST':
-        current_user.bio = request.form.get('bio')
-        current_user.privacy_searchable = 'privacy_searchable' in request.form
-        current_user.privacy_listable = 'privacy_listable' in request.form
-        # Presence hiding
-        if 'hide_status' in request.form:
-            current_user.hide_status = True
+    # Keep legacy path, but serve SPA on GET
+    if request.method == 'GET':
+        return send_spa_index()
+
+    current_user.bio = request.form.get('bio', current_user.bio)
+    current_user.privacy_searchable = 'privacy_searchable' in request.form
+    current_user.privacy_listable = 'privacy_listable' in request.form
+
+    if 'hide_status' in request.form:
+        current_user.hide_status = True
+        current_user.presence_status = 'hidden'
+    else:
+        current_user.hide_status = False
+        if current_user.presence_status != 'away':
+            current_user.presence_status = 'online'
+
+    if 'avatar_file' in request.files:
+        file = request.files['avatar_file']
+        if file and file.filename:
+            filepath = save_file(file, 'avatars')
+            if filepath:
+                current_user.avatar_url = filepath
+
+    db.session.commit()
+    _emit_presence_update_for_user(current_user)
+
+    if _wants_json():
+        return jsonify({'success': True})
+
+    flash('Settings updated')
+    return redirect(url_for('api.settings'))
+
+
+@api_bp.route('/api/v1/user/settings', methods=['GET', 'PATCH'])
+@login_required
+def user_settings_api():
+    if request.method == 'GET':
+        return jsonify({
+            'id': current_user.id,
+            'username': current_user.username,
+            'avatar_url': current_user.avatar_url or 'https://placehold.co/50x50',
+            'bio': current_user.bio or '',
+            'privacy_searchable': bool(current_user.privacy_searchable),
+            'privacy_listable': bool(current_user.privacy_listable),
+            'hide_status': bool(current_user.hide_status),
+            'presence_status': current_user.presence_status or 'offline',
+        })
+
+    data = request.get_json(silent=True) or {}
+    if 'bio' in data:
+        current_user.bio = str(data.get('bio') or '')[:300]
+    if 'username' in data:
+        next_username = str(data.get('username') or '').strip()
+        if len(next_username) < 3 or len(next_username) > 30:
+            return jsonify({'error': 'username should be 3..30 characters long'}), 400
+        if not re.match(r'^[a-zA-Z0-9_-]+$', next_username):
+            return jsonify({'error': 'username can only contain letters, numbers, hyphens, and underscores'}), 400
+        exists = User.query.filter(
+            func.lower(User.username) == next_username.lower(),
+            User.id != current_user.id
+        ).first()
+        if exists:
+            return jsonify({'error': 'username already taken'}), 409
+        current_user.username = next_username
+    if 'privacy_searchable' in data:
+        current_user.privacy_searchable = bool(data.get('privacy_searchable'))
+    if 'privacy_listable' in data:
+        current_user.privacy_listable = bool(data.get('privacy_listable'))
+    if 'hide_status' in data:
+        current_user.hide_status = bool(data.get('hide_status'))
+        if current_user.hide_status:
             current_user.presence_status = 'hidden'
-        else:
-            current_user.hide_status = False
-            # Set to online if not hidden
-            if current_user.presence_status != 'away':
-                current_user.presence_status = 'online'
-        
-        if 'avatar_file' in request.files:
-            file = request.files['avatar_file']
-            if file and file.filename:
-                filepath = save_file(file, 'avatars')
-                if filepath:
-                    current_user.avatar_url = filepath
-        
-        db.session.commit()
-        
-        # Notify all members of status change
-        from app.models import Member
-        memberships = Member.query.filter_by(user_id=current_user.id).all()
-        for m in memberships:
-            for ch in m.room.channels:
-                socketio.emit('presence_updated', {
-                    'user_id': current_user.id,
-                    'username': current_user.username,
-                    'status': current_user.presence_status
-                }, room=str(ch.id), skip_sid=None)
-        
-        flash('Settings updated')
-    
-    return render_template('settings.html', user=current_user)
+        elif current_user.presence_status != 'away':
+            current_user.presence_status = 'online'
+
+    db.session.commit()
+    _emit_presence_update_for_user(current_user)
+
+    return jsonify({'success': True})
+
+
+@api_bp.route('/api/v1/user/avatar', methods=['POST'])
+@login_required
+def upload_user_avatar_api():
+    if 'avatar' not in request.files:
+        return jsonify({'error': 'avatar file is required'}), 400
+
+    file = request.files['avatar']
+    if not file or not file.filename:
+        return jsonify({'error': 'avatar file is required'}), 400
+
+    filepath = save_file(file, 'avatars')
+    if not filepath:
+        return jsonify({'error': 'failed to save avatar'}), 500
+
+    current_user.avatar_url = filepath
+    db.session.commit()
+    return jsonify({'success': True, 'avatar_url': current_user.avatar_url})
 
 @api_bp.route('/user/avatar/delete', methods=['POST'])
 @login_required
 def delete_user_avatar():
     # Delete user avatar
-    if current_user.avatar_url and current_user.avatar_url != "https://via.placeholder.com/50":
+    if current_user.avatar_url and current_user.avatar_url != "https://placehold.co/50x50":
         if current_user.avatar_url.startswith('/uploads/'):
             try:
                 filename = current_user.avatar_url.lstrip('/uploads/').lstrip('/')
@@ -150,7 +326,7 @@ def delete_user_avatar():
             except:
                 pass
         
-        current_user.avatar_url = "https://via.placeholder.com/50"
+        current_user.avatar_url = "https://placehold.co/50x50"
         db.session.commit()
     
     return jsonify({'success': True})
@@ -384,6 +560,91 @@ def delete_music(music_id):
     return jsonify({'success': True})
 
 # --- MESSAGE ACTIONS ---
+
+@api_bp.route('/api/v1/reactions', methods=['GET'])
+@login_required
+def list_reactions():
+    return jsonify({
+        'reactions': [
+            '👍', '❤️', '😂', '😈', '😢', '🔥', '🎉', '🥲', '✅', '❌'
+        ]
+    })
+
+
+@api_bp.route('/api/v1/gifs/trending', methods=['GET'])
+@login_required
+def gifs_trending():
+    api_key = _get_giphy_key()
+    if not api_key:
+        return jsonify({'error': 'GIPHY_API_KEY is not configured'}), 500
+
+    limit = request.args.get('limit', 24, type=int)
+    offset = request.args.get('offset', 0, type=int)
+    if limit < 1:
+        limit = 1
+    if limit > 50:
+        limit = 50
+    if offset < 0:
+        offset = 0
+
+    try:
+        import giphy_client
+        from giphy_client.rest import ApiException
+
+        api_instance = giphy_client.DefaultApi()
+        res = _giphy_call_with_optional_offset(api_instance, 'gifs_trending_get', api_key, limit=limit, offset=offset, rating='pg-13')
+        items = []
+        for g in (getattr(res, 'data', None) or []):
+            mapped = _serialize_giphy_item(g)
+            if mapped:
+                items.append(mapped)
+        pagination = getattr(res, 'pagination', None)
+        total = getattr(pagination, 'total_count', None) if pagination else None
+        count = getattr(pagination, 'count', None) if pagination else None
+        next_offset = offset + (int(count) if isinstance(count, int) else len(items))
+        return jsonify({'gifs': items, 'pagination': {'offset': offset, 'limit': limit, 'total': total, 'next_offset': next_offset}})
+    except Exception as e:
+        return jsonify({'error': f'Failed to load trending gifs: {str(e)}'}), 500
+
+
+@api_bp.route('/api/v1/gifs/search', methods=['GET'])
+@login_required
+def gifs_search():
+    api_key = _get_giphy_key()
+    if not api_key:
+        return jsonify({'error': 'GIPHY_API_KEY is not configured'}), 500
+
+    q = request.args.get('q', '', type=str).strip()
+    if not q:
+        return jsonify({'gifs': [], 'pagination': {'offset': 0, 'limit': 0, 'total': 0, 'next_offset': 0}})
+
+    limit = request.args.get('limit', 24, type=int)
+    offset = request.args.get('offset', 0, type=int)
+    if limit < 1:
+        limit = 1
+    if limit > 50:
+        limit = 50
+    if offset < 0:
+        offset = 0
+
+    try:
+        import giphy_client
+        from giphy_client.rest import ApiException
+
+        api_instance = giphy_client.DefaultApi()
+        res = _giphy_call_with_optional_offset(api_instance, 'gifs_search_get', api_key, limit=limit, offset=offset, rating='pg-13', q=q)
+        items = []
+        for g in (getattr(res, 'data', None) or []):
+            mapped = _serialize_giphy_item(g)
+            if mapped:
+                items.append(mapped)
+        pagination = getattr(res, 'pagination', None)
+        total = getattr(pagination, 'total_count', None) if pagination else None
+        count = getattr(pagination, 'count', None) if pagination else None
+        next_offset = offset + (int(count) if isinstance(count, int) else len(items))
+        return jsonify({'gifs': items, 'pagination': {'offset': offset, 'limit': limit, 'total': total, 'next_offset': next_offset}})
+    except Exception as e:
+        return jsonify({'error': f'Failed to search gifs: {str(e)}'}), 500
 
 @api_bp.route('/message/<int:message_id>/delete', methods=['POST'])
 @login_required
@@ -653,6 +914,10 @@ def join_room_by_invite(token):
     new_member = Member(user_id=current_user.id, room_id=room.id, role='member')
     db.session.add(new_member)
     db.session.commit()
+
+    ensure_default_roles(room.id)
+    ensure_user_default_roles(current_user.id, room.id)
+    db.session.commit()
     
     flash(f'you have joined {room.name}')
     return redirect(url_for('main.view_room', room_id=room.id))
@@ -687,8 +952,7 @@ def get_current_user():
     return jsonify({
         'id': current_user.id,
         'username': current_user.username,
-        'email': current_user.email,
-        'avatar_url': current_user.avatar_url or 'https://via.placeholder.com/50',
+        'avatar_url': current_user.avatar_url or 'https://placehold.co/50x50',
         'bio': current_user.bio or '',
         'presence_status': current_user.presence_status or 'offline',
         'hide_status': current_user.hide_status or False,
@@ -707,7 +971,7 @@ def get_user_rooms():
             'id': room.id,
             'name': room.name,
             'type': room.type,
-            'description': room.description,
+            'description': getattr(room, 'description', None) or '',
             'avatar_url': room.avatar_url,
             'member_count': len(room.members),
             'channels': []
@@ -726,6 +990,247 @@ def get_user_rooms():
         rooms_data.append(room_dict)
     
     return jsonify({'rooms': rooms_data})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/members', methods=['GET'])
+@login_required
+def get_room_members(room_id):
+    # Members list for mentions/autocomplete in SPA
+    room = Room.query.get_or_404(room_id)
+    membership = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
+    if not membership:
+        return jsonify({'error': 'Access denied'}), 403
+
+    members = Member.query.filter_by(room_id=room_id).all()
+    role_links = MemberRole.query.filter_by(room_id=room_id).all()
+    role_map = {}
+    for link in role_links:
+        role_map.setdefault(link.user_id, []).append(link.role_id)
+    payload = []
+    for m in members:
+        if not m.user:
+            continue
+        payload.append({
+            'id': m.user.id,
+            'username': m.user.username,
+            'avatar_url': m.user.avatar_url or 'https://placehold.co/50x50',
+            'role': m.role,
+            'role_ids': sorted(role_map.get(m.user.id, [])),
+            'presence_status': 'hidden' if getattr(m.user, 'hide_status', False) else (m.user.presence_status or 'offline')
+        })
+
+    payload.sort(key=lambda u: u['username'].lower())
+    return jsonify({'room_id': room_id, 'members': payload})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/settings', methods=['GET', 'PATCH'])
+@login_required
+def room_settings_api(room_id):
+    room = Room.query.get_or_404(room_id)
+    member = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
+    if not member:
+        return jsonify({'error': 'Access denied'}), 403
+
+    if request.method == 'GET':
+        return jsonify({
+            'id': room.id,
+            'name': room.name,
+            'type': room.type,
+            'owner_id': room.owner_id,
+            'avatar_url': room.avatar_url,
+            'permissions': {
+                'can_manage_server': bool(member.role in ['owner', 'admin'])
+            }
+        })
+
+    if member.role not in ['owner', 'admin']:
+        return jsonify({'error': 'Access denied'}), 403
+
+    data = request.get_json(silent=True) or {}
+    if 'name' in data:
+        next_name = str(data.get('name') or '').strip()
+        if len(next_name) < 2 or len(next_name) > 150:
+            return jsonify({'error': 'room name must be 2..150 chars'}), 400
+        room.name = next_name
+
+    db.session.commit()
+    return jsonify({'success': True, 'room': {'id': room.id, 'name': room.name}})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/roles', methods=['GET'])
+@login_required
+def get_room_roles(room_id):
+    room = Room.query.get_or_404(room_id)
+    member = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
+    if not member:
+        return jsonify({'error': 'Access denied'}), 403
+
+    ensure_default_roles(room_id)
+    db.session.commit()
+
+    roles = Role.query.filter_by(room_id=room_id).all()
+    data = []
+    for role in roles:
+        allowed_source_roles = [
+            p.source_role_id
+            for p in RoleMentionPermission.query.filter_by(room_id=room_id, target_role_id=role.id).all()
+        ]
+        data.append({
+            'id': role.id,
+            'name': role.name,
+            'mention_tag': role.mention_tag,
+            'is_system': bool(role.is_system),
+            'can_be_mentioned_by_everyone': bool(role.can_be_mentioned_by_everyone),
+            'allowed_source_role_ids': allowed_source_roles
+        })
+
+    data.sort(key=lambda r: r['name'].lower())
+    return jsonify({'room_id': room_id, 'roles': data})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/roles', methods=['POST'])
+@login_required
+def create_room_role(room_id):
+    room = Room.query.get_or_404(room_id)
+    if not has_room_admin_access(current_user.id, room):
+        return jsonify({'error': 'Access denied'}), 403
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name') or '').strip()
+    if len(name) < 2 or len(name) > 60:
+        return jsonify({'error': 'role name must be 2..60 chars'}), 400
+
+    mention_tag = normalize_role_tag(name)
+    if len(mention_tag) < 2:
+        return jsonify({'error': 'role name is invalid'}), 400
+
+    exists = Role.query.filter_by(room_id=room_id, mention_tag=mention_tag).first()
+    if exists:
+        return jsonify({'error': 'role already exists'}), 409
+
+    role = Role(
+        room_id=room_id,
+        name=name,
+        mention_tag=mention_tag,
+        is_system=False,
+        can_be_mentioned_by_everyone=bool(data.get('can_be_mentioned_by_everyone', False))
+    )
+    db.session.add(role)
+    db.session.commit()
+    return jsonify({'success': True, 'role_id': role.id})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/roles/<int:role_id>', methods=['PATCH'])
+@login_required
+def update_room_role(room_id, role_id):
+    room = Room.query.get_or_404(room_id)
+    if not has_room_admin_access(current_user.id, room):
+        return jsonify({'error': 'Access denied'}), 403
+
+    role = Role.query.filter_by(id=role_id, room_id=room_id).first_or_404()
+    data = request.get_json(silent=True) or {}
+
+    if 'can_be_mentioned_by_everyone' in data:
+        role.can_be_mentioned_by_everyone = bool(data.get('can_be_mentioned_by_everyone'))
+
+    if not role.is_system and 'name' in data:
+        new_name = str(data.get('name') or '').strip()
+        if len(new_name) < 2 or len(new_name) > 60:
+            return jsonify({'error': 'role name must be 2..60 chars'}), 400
+        new_tag = normalize_role_tag(new_name)
+        exists = Role.query.filter(
+            Role.room_id == room_id,
+            Role.mention_tag == new_tag,
+            Role.id != role.id
+        ).first()
+        if exists:
+            return jsonify({'error': 'role name already exists'}), 409
+        role.name = new_name
+        role.mention_tag = new_tag
+
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/roles/<int:target_role_id>/mentioners', methods=['PATCH'])
+@login_required
+def update_role_mention_permissions(room_id, target_role_id):
+    room = Room.query.get_or_404(room_id)
+    if not has_room_admin_access(current_user.id, room):
+        return jsonify({'error': 'Access denied'}), 403
+
+    target_role = Role.query.filter_by(id=target_role_id, room_id=room_id).first_or_404()
+    data = request.get_json(silent=True) or {}
+    source_role_ids = data.get('source_role_ids', [])
+    if not isinstance(source_role_ids, list):
+        return jsonify({'error': 'source_role_ids must be list'}), 400
+
+    valid_roles = Role.query.filter(Role.room_id == room_id, Role.id.in_(source_role_ids)).all()
+    valid_ids = {r.id for r in valid_roles}
+
+    existing = RoleMentionPermission.query.filter_by(room_id=room_id, target_role_id=target_role.id).all()
+    for perm in existing:
+        if perm.source_role_id not in valid_ids:
+            db.session.delete(perm)
+
+    existing_ids = {perm.source_role_id for perm in existing}
+    for rid in valid_ids:
+        if rid not in existing_ids:
+            db.session.add(RoleMentionPermission(
+                room_id=room_id,
+                source_role_id=rid,
+                target_role_id=target_role.id
+            ))
+
+    db.session.commit()
+    return jsonify({'success': True, 'target_role_id': target_role.id, 'source_role_ids': sorted(valid_ids)})
+
+
+@api_bp.route('/api/v1/room/<int:room_id>/members/<int:user_id>/roles', methods=['PATCH'])
+@login_required
+def assign_member_roles(room_id, user_id):
+    room = Room.query.get_or_404(room_id)
+    if not has_room_admin_access(current_user.id, room):
+        return jsonify({'error': 'Access denied'}), 403
+
+    member = Member.query.filter_by(room_id=room_id, user_id=user_id).first()
+    if not member:
+        return jsonify({'error': 'member not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    role_ids = data.get('role_ids', [])
+    if not isinstance(role_ids, list):
+        return jsonify({'error': 'role_ids must be list'}), 400
+
+    ensure_default_roles(room_id)
+    db.session.flush()
+
+    everyone = Role.query.filter_by(room_id=room_id, mention_tag='everyone').first()
+    admin_role = Role.query.filter_by(room_id=room_id, mention_tag='admin').first()
+
+    valid_roles = Role.query.filter(Role.room_id == room_id, Role.id.in_(role_ids)).all()
+    valid_ids = {r.id for r in valid_roles}
+    if everyone:
+        valid_ids.add(everyone.id)  # everyone must always be present
+
+    existing_links = MemberRole.query.filter_by(room_id=room_id, user_id=user_id).all()
+    existing_ids = {l.role_id for l in existing_links}
+
+    for link in existing_links:
+        if link.role_id not in valid_ids:
+            db.session.delete(link)
+    for rid in valid_ids:
+        if rid not in existing_ids:
+            db.session.add(MemberRole(room_id=room_id, user_id=user_id, role_id=rid))
+
+    # Keep legacy member.role in sync with admin role
+    if admin_role and admin_role.id in valid_ids and member.role == 'member':
+        member.role = 'admin'
+    if admin_role and admin_role.id not in valid_ids and member.role == 'admin':
+        member.role = 'member'
+
+    db.session.commit()
+    return jsonify({'success': True, 'user_id': user_id, 'role_ids': sorted(valid_ids)})
 
 @api_bp.route('/api/v1/channel/<int:channel_id>/messages', methods=['GET'])
 @login_required
@@ -781,90 +1286,11 @@ def get_user_profile(user_id):
     return jsonify({
         'id': user.id,
         'username': user.username,
-        'avatar_url': user.avatar_url or 'https://via.placeholder.com/50',
+        'avatar_url': user.avatar_url or 'https://placehold.co/50x50',
         'bio': user.bio or '',
         'presence_status': user.presence_status or 'offline' if not user.hide_status else 'hidden',
         'last_seen': user.last_seen.isoformat() if user.last_seen else None
     })
-
-@api_bp.route('/api/v1/search/users', methods=['GET'])
-@login_required
-def search_users():
-    # Search users by username - for desktop clients
-    query = request.args.get('q', '', type=str).strip()
-    if len(query) < 2:
-        return jsonify({'error': 'Query too short', 'users': []}), 400
-    
-    users = User.query.filter(
-        User.username.ilike(f'%{query}%'),
-        User.privacy_searchable == True
-    ).limit(20).all()
-    
-    users_data = [{
-        'id': u.id,
-        'username': u.username,
-        'avatar_url': u.avatar_url or 'https://via.placeholder.com/50',
-        'bio': u.bio or ''
-    } for u in users]
-    
-    return jsonify({'users': users_data})
-
-@api_bp.route('/api/v1/search/servers', methods=['GET'])
-@login_required
-def search_servers():
-    # Search public servers - for desktop clients
-    query = request.args.get('q', '', type=str).strip()
-    if len(query) < 2:
-        return jsonify({'error': 'Query too short', 'servers': []}), 400
-    
-    rooms = Room.query.filter(
-        Room.name.ilike(f'%{query}%'),
-        Room.type != 'dm'
-    ).limit(20).all()
-    
-    rooms_data = [{
-        'id': r.id,
-        'name': r.name,
-        'description': r.description or '',
-        'type': r.type,
-        'avatar_url': r.avatar_url or 'https://via.placeholder.com/100',
-        'member_count': len(r.members)
-    } for r in rooms]
-    
-    return jsonify({'servers': rooms_data})
-
-@api_bp.route('/api/v1/dm/<int:user_id>/create', methods=['POST'])
-@login_required
-def create_dm(user_id):
-    # Create or get DM with user - for desktop clients
-    user = User.query.get_or_404(user_id)
-    
-    # Check if DM already exists
-    existing_dm = Room.query.filter(
-        Room.type == 'dm',
-        Room.members.any(Member.user_id == current_user.id),
-        Room.members.any(Member.user_id == user_id)
-    ).first()
-    
-    if existing_dm:
-        return jsonify({'success': True, 'room_id': existing_dm.id})
-    
-    # Create new DM
-    dm = Room(name=f"DM: {current_user.username} - {user.username}", type='dm')
-    db.session.add(dm)
-    db.session.flush()
-    
-    # Add both users
-    for uid in [current_user.id, user_id]:
-        member = Member(user_id=uid, room_id=dm.id, role='owner')
-        db.session.add(member)
-    
-    # Create default channel for DM
-    channel = Channel(room_id=dm.id, name='general', emoji='💬')
-    db.session.add(channel)
-    db.session.commit()
-    
-    return jsonify({'success': True, 'room_id': dm.id})
 
 @api_bp.route('/api/v1/room/<int:room_id>/join', methods=['POST'])
 @login_required
@@ -885,6 +1311,10 @@ def join_room_api(room_id):
 
     member = Member(user_id=current_user.id, room_id=room_id, role='member')
     db.session.add(member)
+    db.session.commit()
+
+    ensure_default_roles(room_id)
+    ensure_user_default_roles(current_user.id, room_id)
     db.session.commit()
 
     return jsonify({'success': True, 'message': 'Joined room'})
@@ -1167,8 +1597,10 @@ def admin_change_password(user_id):
     data = request.json
     new_password = data.get('password')
     
-    if not new_password or len(new_password) < 6:
-        return jsonify({'error': 'password should be at least 6 symbols'}), 400
+    from app.routes.auth import validate_password
+    is_valid, error_message = validate_password(new_password)
+    if not is_valid:
+        return jsonify({'error': error_message}), 400
     
     user.password = generate_password_hash(new_password, method='scrypt')
     db.session.commit()
@@ -1197,8 +1629,10 @@ def change_password():
     if new_password != confirm_password:
         return jsonify({'error': 'passwords not matches'}), 400
     
-    if len(new_password) < 6:
-        return jsonify({'error': 'password should be at least 6 symbols'}), 400
+    from app.routes.auth import validate_password
+    is_valid, error_message = validate_password(new_password)
+    if not is_valid:
+        return jsonify({'error': error_message}), 400
     
     if new_password == old_password:
         return jsonify({'error': 'new password should differ from old'}), 400
@@ -1336,6 +1770,8 @@ def promote_user(user_id):
         return jsonify({'error': 'cannot change the owners role'}), 400
 
     target_member.role = 'admin'
+    ensure_default_roles(room_id)
+    ensure_user_default_roles(user_id, room_id)
     db.session.commit()
 
     return jsonify({'success': True, 'message': 'user promoted to admin'})
@@ -1382,6 +1818,11 @@ def demote_user(user_id):
         return jsonify({'error': 'user is not an admin'}), 400
 
     target_member.role = 'member'
+    admin_role = Role.query.filter_by(room_id=room_id, mention_tag='admin').first()
+    if admin_role:
+        links = MemberRole.query.filter_by(room_id=room_id, user_id=user_id, role_id=admin_role.id).all()
+        for link in links:
+            db.session.delete(link)
     db.session.commit()
 
     return jsonify({'success': True, 'message': 'user is demoted to member'})

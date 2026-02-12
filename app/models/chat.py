@@ -37,6 +37,43 @@ class Member(db.Model):
     room_id = db.Column(db.Integer, db.ForeignKey('room.id', ondelete='CASCADE'), nullable=False)
     role = db.Column(db.String(20), default='member')  # 'owner', 'admin', 'member'
 
+
+class Role(db.Model):
+    # Per-room role used for mentions and permissions
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey('room.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = db.Column(db.String(60), nullable=False)
+    mention_tag = db.Column(db.String(60), nullable=False)  # normalized token used in @tag
+    is_system = db.Column(db.Boolean, default=False)  # e.g. everyone/admin
+    can_be_mentioned_by_everyone = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=db.func.now())
+
+    room = db.relationship('Room', backref=db.backref('roles', lazy=True, cascade='all, delete-orphan'))
+
+
+class MemberRole(db.Model):
+    # Mapping user -> role within room
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    room_id = db.Column(db.Integer, db.ForeignKey('room.id', ondelete='CASCADE'), nullable=False, index=True)
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = db.Column(db.DateTime, nullable=False, default=db.func.now())
+
+    user = db.relationship('User', backref=db.backref('member_roles', lazy=True, cascade='all, delete-orphan'))
+    role = db.relationship('Role', backref=db.backref('member_links', lazy=True, cascade='all, delete-orphan'))
+
+
+class RoleMentionPermission(db.Model):
+    # Which source role can mention which target role
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey('room.id', ondelete='CASCADE'), nullable=False, index=True)
+    source_role_id = db.Column(db.Integer, db.ForeignKey('role.id', ondelete='CASCADE'), nullable=False, index=True)
+    target_role_id = db.Column(db.Integer, db.ForeignKey('role.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=db.func.now())
+
+    source_role = db.relationship('Role', foreign_keys=[source_role_id], backref='can_mention')
+    target_role = db.relationship('Role', foreign_keys=[target_role_id], backref='mentionable_by')
+
 class RoomBan(db.Model):
     # Room ban record (separate from membership)
     id = db.Column(db.Integer, primary_key=True)

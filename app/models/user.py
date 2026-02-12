@@ -4,6 +4,33 @@ from datetime import datetime
 from flask_login import UserMixin
 from app.extensions import db
 
+
+class Friendship(db.Model):
+    __tablename__ = 'friendship'
+    id = db.Column(db.Integer, primary_key=True)
+    user_low_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_high_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=db.func.now())
+
+    __table_args__ = (
+        db.UniqueConstraint('user_low_id', 'user_high_id', name='uq_friendship_pair'),
+    )
+
+
+class FriendRequest(db.Model):
+    __tablename__ = 'friend_request'
+    id = db.Column(db.Integer, primary_key=True)
+    from_user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    to_user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    status = db.Column(db.String(20), nullable=False, default='pending')
+    created_at = db.Column(db.DateTime, nullable=False, default=db.func.now())
+    responded_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.Index('ix_friend_request_from_to_status', 'from_user_id', 'to_user_id', 'status'),
+    )
+
+
 class User(UserMixin, db.Model):
     # User model with profile and privacy settings
     id = db.Column(db.Integer, primary_key=True)
@@ -32,10 +59,25 @@ class User(UserMixin, db.Model):
     banned_ips = db.Column(db.Text, default="")  # Comma-separated list of banned IPs
     ban_reason = db.Column(db.String(500), nullable=True)
     banned_at = db.Column(db.DateTime, nullable=True)
+
+    # Authentication hardening
+    failed_login_attempts = db.Column(db.Integer, default=0, nullable=False)
+    lockout_until = db.Column(db.DateTime, nullable=True)
+    last_login_at = db.Column(db.DateTime, nullable=True)
+    last_login_ip = db.Column(db.String(64), nullable=True)
     
     # Relationships
     music_tracks = db.relationship('UserMusic', backref='user', lazy=True, cascade='all, delete-orphan')
     memberships = db.relationship('Member', backref='user', lazy=True)
+
+
+class AuthThrottle(db.Model):
+    # Tracks auth failures by client IP for lockout protection
+    id = db.Column(db.Integer, primary_key=True)
+    ip_address = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    failed_attempts = db.Column(db.Integer, default=0, nullable=False)
+    lockout_until = db.Column(db.DateTime, nullable=True)
+    last_attempt_at = db.Column(db.DateTime, nullable=True)
 
 class UserMusic(db.Model):
     # User's music library

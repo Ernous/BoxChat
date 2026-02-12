@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap');
+
+:root {
+  --bc-shadow-soft: 0 10px 36px rgba(2, 12, 27, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: 'Manrope', 'Segoe UI', Arial, sans-serif;
+}
+
+.bc-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.bc-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+a {
+  color: inherit;
+}
+
+.mui-style-reset {
+  background-image: none;
+}

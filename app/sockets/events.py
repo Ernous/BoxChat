@@ -3,9 +3,100 @@
 from flask_socketio import join_room, leave_room, emit
 from flask_login import current_user
 from app.extensions import db, socketio
-from app.models import Message, Member, Room, Channel, ReadMessage, User
+from app.models import Message, Member, Room, Channel, ReadMessage, User, Role, MemberRole
+from app.functions import can_user_mention_role
 from datetime import datetime
 import os
+import re
+from urllib.parse import urlparse
+
+
+def _parse_mentions(content, room_id):
+    # Parse @username + @role mentions (including @everyone role)
+    text = content or ''
+    tokens = re.findall(r'@([a-zA-Z0-9_-]{2,60})', text)
+    if not tokens:
+        return {
+            'mention_everyone': False,
+            'mentioned_user_ids': [],
+            'mentioned_usernames': [],
+            'mentioned_role_ids': [],
+            'mentioned_role_tags': [],
+            'denied_role_tags': [],
+        }
+
+    members = Member.query.filter_by(room_id=room_id).all()
+    username_to_user = {}
+    for m in members:
+        if m.user:
+            username_to_user[m.user.username.lower()] = m.user
+
+    room_roles = Role.query.filter_by(room_id=room_id).all()
+    role_tag_to_role = {r.mention_tag.lower(): r for r in room_roles}
+
+    username_tokens = set()
+    role_tokens = set()
+    for token in tokens:
+        low = token.lower()
+        if low in role_tag_to_role:
+            role_tokens.add(low)
+        else:
+            username_tokens.add(low)
+
+    mentioned_users = []
+    for uname in sorted(username_tokens):
+        user = username_to_user.get(uname)
+        if user:
+            mentioned_users.append(user)
+
+    allowed_roles = []
+    denied_role_tags = []
+    for tag in sorted(role_tokens):
+        role = role_tag_to_role[tag]
+        if can_user_mention_role(current_user.id, room_id, role):
+            allowed_roles.append(role)
+        else:
+            denied_role_tags.append(role.mention_tag)
+
+    role_user_ids = set()
+    for role in allowed_roles:
+        links = MemberRole.query.filter_by(room_id=room_id, role_id=role.id).all()
+        for link in links:
+            role_user_ids.add(link.user_id)
+
+    all_mentioned_user_ids = set([u.id for u in mentioned_users]) | role_user_ids
+    all_mentioned_usernames = []
+    for uid in sorted(all_mentioned_user_ids):
+        user = User.query.get(uid)
+        if user:
+            all_mentioned_usernames.append(user.username)
+
+    mention_everyone = any(r.mention_tag.lower() == 'everyone' for r in allowed_roles)
+    return {
+        'mention_everyone': mention_everyone,
+        'mentioned_user_ids': sorted(all_mentioned_user_ids),
+        'mentioned_usernames': all_mentioned_usernames,
+        'mentioned_role_ids': [r.id for r in allowed_roles],
+        'mentioned_role_tags': [r.mention_tag for r in allowed_roles],
+        'denied_role_tags': denied_role_tags,
+    }
+
+
+def _is_allowed_external_media_url(url):
+    try:
+        parsed = urlparse(str(url or '').strip())
+        if parsed.scheme not in ('http', 'https'):
+            return False
+        host = (parsed.netloc or '').lower()
+        if not host:
+            return False
+        allowed_hosts = (
+            'giphy.com',
+            'giphyusercontent.com',
+        )
+        return any(host == h or host.endswith(f'.{h}') for h in allowed_hosts)
+    except Exception:
+        return False
 
 @socketio.on('join')
 def on_join(data):
@@ -179,22 +270,23 @@ def handle_send_message(data):
         emit('error', {'message': 'Только владельцы и администраторы могут публиковать'})
         return
     
-    # Validate file_url if provided: only allow files from '/uploads/' that exist on disk
+    # Validate file_url if provided:
+    # - allow local uploads (/uploads/...) if file exists
+    # - allow trusted external gif hosts for GIF picker
     if file_url:
         try:
-            # only accept relative uploads path
-            if not file_url.startswith('/uploads/'):
-                file_url = None
-            else:
+            if file_url.startswith('/uploads/'):
                 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 abs_path = os.path.join(base_dir, file_url.lstrip('/'))
                 if not os.path.exists(abs_path):
                     file_url = None
+            elif not _is_allowed_external_media_url(file_url):
+                file_url = None
         except Exception:
             file_url = None
 
-    # If file_url was validated, derive server-side filename and size to avoid spoofing
-    if file_url:
+    # If local upload URL was validated, derive server-side filename and size to avoid spoofing
+    if file_url and str(file_url).startswith('/uploads/'):
         try:
             file_name = os.path.basename(file_url)
         except Exception:
@@ -222,6 +314,8 @@ def handle_send_message(data):
     )
     db.session.add(msg)
     db.session.commit()
+
+    mention_data = _parse_mentions(content, room_id)
     
     # Load reactions for the message
     reactions_data = {}
@@ -260,7 +354,15 @@ def handle_send_message(data):
         'file_size': file_size,
         'edited_at_iso': msg.edited_at.strftime('%Y-%m-%dT%H:%M:%SZ') if msg.edited_at else None,
         'reactions': reactions_data,
-        'reply_to': reply_payload
+        'reply_to': reply_payload,
+        'mentions': {
+            'everyone': mention_data['mention_everyone'],
+            'user_ids': mention_data['mentioned_user_ids'],
+            'usernames': mention_data['mentioned_usernames'],
+            'role_ids': mention_data['mentioned_role_ids'],
+            'role_tags': mention_data['mentioned_role_tags'],
+            'denied_role_tags': mention_data['denied_role_tags'],
+        }
     }, room=str(channel_id))
 
     # Send per-user notifications and unread counts to members' personal rooms
@@ -301,7 +403,13 @@ def handle_send_message(data):
                 'from_user': current_user.username,
                 'from_user_id': current_user.id,
                 'snippet': snippet,
-                'unread_count': unread_count
+                'unread_count': unread_count,
+                'mention': (
+                    mention_data['mention_everyone']
+                    or uid in set(mention_data['mentioned_user_ids'])
+                ),
+                'mention_everyone': mention_data['mention_everyone'],
+                'mention_roles': mention_data['mentioned_role_tags'],
             }
 
             # Emit a generic notification event to the user's personal room
