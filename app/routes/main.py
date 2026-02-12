@@ -5,6 +5,8 @@ from flask_login import login_required, current_user
 from datetime import datetime
 from app.extensions import db, socketio
 from app.models import Room, Channel, Member, Message, ReadMessage, User, RoomBan
+from app.routes.spa import send_spa_index
+from app.functions import ensure_default_roles, ensure_user_default_roles
 
 main_bp = Blueprint('main', __name__)
 
@@ -12,112 +14,37 @@ main_bp = Blueprint('main', __name__)
 @login_required
 def dashboard():
     # Main dashboard - shows DMs and servers
-    # Get DMs with unread count
-    dms_query = db.session.query(Room, Member).join(Member).filter(
-        Member.user_id == current_user.id, 
-        Room.type == 'dm'
-    ).all()
-    
-    dms_with_info = []
-    for room, member in dms_query:
-        # Find other member
-        other_member = Member.query.filter(
-            Member.room_id == room.id,
-            Member.user_id != current_user.id
-        ).first()
-        other_user = other_member.user if other_member else None
-        
-        # Get DM channel and unread count
-        channel = Channel.query.filter_by(room_id=room.id).first()
-        unread_count = 0
-        
-        if channel:
-            read_msg = ReadMessage.query.filter_by(
-                user_id=current_user.id,
-                channel_id=channel.id
-            ).first()
-            
-            if read_msg and read_msg.last_read_message_id:
-                unread_count = Message.query.filter(
-                    Message.channel_id == channel.id,
-                    Message.id > read_msg.last_read_message_id,
-                    Message.user_id != current_user.id
-                ).count()
-            elif not read_msg:
-                unread_count = Message.query.filter(
-                    Message.channel_id == channel.id,
-                    Message.user_id != current_user.id
-                ).count()
-        
-        dms_with_info.append({
-            'room': room,
-            'other_user': other_user,
-            'unread_count': unread_count
-        })
-    
-    # Sort by unread count, then by ID
-    dms_with_info.sort(key=lambda x: (
-        x['unread_count'] == 0,
-        -x['room'].id
-    ))
-    
-    # Get servers/channels with roles
-    servers_query = db.session.query(Room, Member).join(Member).filter(
-        Member.user_id == current_user.id,
-        Room.type.in_(['server', 'broadcast'])
-    ).all()
-    
-    # Filter out servers where user is banned
-    servers_with_role = []
-    banned_room_ids = db.session.query(RoomBan.room_id).filter(RoomBan.user_id == current_user.id).all()
-    banned_room_ids = [r[0] for r in banned_room_ids]
-    
-    for room, member in servers_query:
-        if room and room.id not in banned_room_ids:
-            servers_with_role.append({
-                'room': room,
-                'role': member.role
-            })
-    
-    # Clean orphaned members
-    orphaned_members = db.session.query(Member).filter(
-        Member.user_id == current_user.id,
-        ~Member.room_id.in_(db.session.query(Room.id))
-    ).all()
-    if orphaned_members:
-        for orphan in orphaned_members:
-            db.session.delete(orphan)
-        db.session.commit()
-    
-    return render_template('dashboard.html', dms=dms_with_info, servers=servers_with_role, user=current_user)
-
+    return send_spa_index()
 
 @main_bp.route('/explore')
 @login_required
 def explore():
     # Explore public rooms and users
-    query = request.args.get('q', '')
-    users = []
-    rooms = []
-    
-    if query:
-        users = User.query.filter(
-            User.username.contains(query),
-            User.privacy_searchable == True
-        ).all()
-        rooms = Room.query.filter(
-            Room.name.contains(query),
-            Room.is_public == True
-        ).all()
-    else:
-        if current_user.is_superuser:
-            users = User.query.all()
-        else:
-            users = User.query.filter_by(privacy_listable=True).all()
-        rooms = Room.query.filter_by(is_public=True).all()
-    
-    return render_template('explore.html', users=users, rooms=rooms, query=query)
+    return send_spa_index()
 
+@main_bp.route('/room/<int:room_id>')
+@login_required
+def view_room(room_id):
+    # View room and messages
+    room = Room.query.get_or_404(room_id)
+    member = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
+    
+    room_ban = RoomBan.query.filter_by(user_id=current_user.id, room_id=room_id).first()
+    if room_ban:
+        flash(f'you are banned from this room{": " + room_ban.reason if room_ban.reason else ""}')
+        return redirect(url_for('main.dashboard'))
+    
+    if not member:
+        if not room.is_public:
+            flash('Нет доступа к этой комнате')
+            return redirect(url_for('main.dashboard'))
+
+    return send_spa_index()
+
+@main_bp.route('/profile/<int:user_id>')
+@login_required
+def view_profile(user_id):
+    return send_spa_index()
 
 @main_bp.route('/create_room', methods=['POST'])
 @login_required
@@ -139,9 +66,12 @@ def create_room():
     db.session.add(mem)
     db.session.add(chan)
     db.session.commit()
+
+    ensure_default_roles(new_room.id)
+    ensure_user_default_roles(current_user.id, new_room.id)
+    db.session.commit()
     
     return redirect(url_for('main.view_room', room_id=new_room.id))
-
 
 @main_bp.route('/start_dm/<int:user_id>')
 @login_required
@@ -171,6 +101,11 @@ def start_dm(user_id):
     
     db.session.add_all([m1, m2, c1])
     db.session.commit()
+
+    ensure_default_roles(room.id)
+    ensure_user_default_roles(current_user.id, room.id)
+    ensure_user_default_roles(other.id, room.id)
+    db.session.commit()
     
     # Notify other user via Socket.IO
     socketio.emit('new_dm_created', {
@@ -181,104 +116,6 @@ def start_dm(user_id):
     }, room=f"user_{other.id}")
     
     return redirect(url_for('main.view_room', room_id=room.id))
-
-
-@main_bp.route('/room/<int:room_id>')
-@login_required
-def view_room(room_id):
-    # View room and messages
-    room = Room.query.get_or_404(room_id)
-    member = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
-    
-    # Check if user is banned from this room
-    room_ban = RoomBan.query.filter_by(user_id=current_user.id, room_id=room_id).first()
-    
-    if room_ban:
-        flash(f'you are banned from this room{": " + room_ban.reason if room_ban.reason else ""}')
-        return redirect(url_for('main.dashboard'))
-    
-    if not member:
-        if not room.is_public:
-            flash('Нет доступа к этой комнате')
-            return redirect(url_for('main.dashboard'))
-    
-    # Get active channel
-    active_channel_id = request.args.get('channel_id')
-    if not active_channel_id and room.channels:
-        active_channel_id = room.channels[0].id
-    
-    messages = []
-    if active_channel_id:
-        messages = Message.query.filter_by(channel_id=active_channel_id).order_by(Message.timestamp.asc()).all()
-        
-        # Load reactions for each message
-        for msg in messages:
-            msg.reactions_grouped = {}
-            reactions = Message.query.filter_by(id=msg.id).first().reactions
-            for reaction in reactions:
-                if reaction.emoji not in msg.reactions_grouped:
-                    msg.reactions_grouped[reaction.emoji] = []
-                msg.reactions_grouped[reaction.emoji].append(reaction.user.username)
-            # If this message is a reply to another persisted message, include reply metadata
-            try:
-                if getattr(msg, 'reply_to_id', None):
-                    orig = Message.query.get(msg.reply_to_id)
-                    if orig:
-                        # build a small snippet (first line) for display
-                        snippet = (orig.content or '').split('\n')[0][:200]
-                        msg.reply_to = {
-                            'id': orig.id,
-                            'username': orig.user.username if orig.user else 'Unknown',
-                            'snippet': snippet
-                        }
-            except Exception:
-                msg.reply_to = None
-        
-        # Mark messages as read
-        if messages:
-            last_message = messages[-1]
-            read_msg = ReadMessage.query.filter_by(
-                user_id=current_user.id,
-                channel_id=active_channel_id
-            ).first()
-            
-            if read_msg:
-                read_msg.last_read_message_id = last_message.id
-                read_msg.last_read_at = datetime.utcnow()
-            else:
-                read_msg = ReadMessage(
-                    user_id=current_user.id,
-                    channel_id=active_channel_id,
-                    last_read_message_id=last_message.id
-                )
-                db.session.add(read_msg)
-            
-            db.session.commit()
-            
-            # Notify others about read status
-            socketio.emit('read_status_updated', {
-                'user_id': current_user.id,
-                'username': current_user.username,
-                'channel_id': active_channel_id
-            }, room=str(active_channel_id))
-    
-    return render_template(
-        'room.html',
-        room=room,
-        member=member,
-        active_channel_id=int(active_channel_id) if active_channel_id else None,
-        active_channel=Channel.query.get(active_channel_id) if active_channel_id else None,
-        messages=messages,
-        channel_unread_counts={
-            ch.id: (
-                Message.query.filter(
-                    Message.channel_id == ch.id,
-                    Message.user_id != current_user.id,
-                    Message.id > (ReadMessage.query.filter_by(user_id=current_user.id, channel_id=ch.id).first().last_read_message_id if ReadMessage.query.filter_by(user_id=current_user.id, channel_id=ch.id).first() and ReadMessage.query.filter_by(user_id=current_user.id, channel_id=ch.id).first().last_read_message_id else 0)
-                ).count()
-            ) for ch in room.channels
-        }
-    )
 
 @main_bp.route('/join_room/<int:room_id>')
 @login_required
@@ -302,6 +139,9 @@ def join_room_view(room_id):
         if not existing:
             m = Member(user_id=current_user.id, room_id=room_id, role='member')
             db.session.add(m)
+            db.session.commit()
+            ensure_default_roles(room_id)
+            ensure_user_default_roles(current_user.id, room_id)
             db.session.commit()
     
     return redirect(url_for('main.view_room', room_id=room_id))
@@ -328,33 +168,8 @@ def join_room_by_invite(token):
         m = Member(user_id=current_user.id, room_id=room.id, role='member')
         db.session.add(m)
         db.session.commit()
+        ensure_default_roles(room.id)
+        ensure_user_default_roles(current_user.id, room.id)
+        db.session.commit()
     
     return redirect(url_for('main.view_room', room_id=room.id))
-
-@main_bp.route('/profile/<int:user_id>')
-@login_required
-def view_profile(user_id):
-    # View user profile
-    user = User.query.get_or_404(user_id)
-    # Optionally accept room_id to determine viewer role inside that room
-    room_id = request.args.get('room_id', type=int)
-    viewer_role = None
-    is_room_creator = False
-    profile_member_role = None
-    is_banned_in_room = False
-    if room_id:
-        m = Member.query.filter_by(user_id=current_user.id, room_id=room_id).first()
-        if m:
-            viewer_role = m.role
-        # determine if current_user is room creator and get target's role in that room
-        room = Room.query.get(room_id)
-        if room and room.owner_id == current_user.id:
-            is_room_creator = True
-        target_m = Member.query.filter_by(user_id=user.id, room_id=room_id).first()
-        if target_m:
-            profile_member_role = target_m.role
-        # Check if user is banned in this room
-        room_ban = RoomBan.query.filter_by(user_id=user.id, room_id=room_id).first()
-        if room_ban:
-            is_banned_in_room = True
-    return render_template('profile_preview.html', profile_user=user, current_user=current_user, viewer_role=viewer_role, room_id=room_id, is_room_creator=is_room_creator, profile_member_role=profile_member_role, is_banned_in_room=is_banned_in_room)

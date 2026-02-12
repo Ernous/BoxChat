@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import timedelta
 
 # Try to load configuration from `config.json` located next to this file.
 # If the file is missing or a key is absent, fall back to the defaults below.
@@ -13,7 +14,18 @@ _defaults = {
     'SQLALCHEMY_DATABASE_URI': 'sqlite:///thecomboxmsgr.db',
     'SQLALCHEMY_TRACK_MODIFICATIONS': False,
     'SECRET_KEY': 'super_secret_key_v2',
+    'GIPHY_API_KEY': '',
     'UPLOAD_FOLDER': 'uploads',
+    'PERMANENT_SESSION_LIFETIME_DAYS': 30,
+    'REMEMBER_COOKIE_DURATION_DAYS': 30,
+    'SESSION_COOKIE_NAME': 'boxchat_session',
+    'SESSION_COOKIE_HTTPONLY': True,
+    'SESSION_COOKIE_SAMESITE': 'Lax',
+    'SESSION_COOKIE_SECURE': False,
+    'REMEMBER_COOKIE_NAME': 'boxchat_remember',
+    'REMEMBER_COOKIE_HTTPONLY': True,
+    'REMEMBER_COOKIE_SAMESITE': 'Lax',
+    'REMEMBER_COOKIE_SECURE': False,
     'MAX_CONTENT_LENGTH': 50 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
     'ALLOWED_EXTENSIONS': [
         'png', 'jpg', 'jpeg', 'gif', 'webp',
@@ -55,6 +67,19 @@ SQLALCHEMY_TRACK_MODIFICATIONS = _get('SQLALCHEMY_TRACK_MODIFICATIONS')
 
 # Security
 SECRET_KEY = _get('SECRET_KEY')
+GIPHY_API_KEY = str(_get('GIPHY_API_KEY') or '')
+PERMANENT_SESSION_LIFETIME_DAYS = int(_get('PERMANENT_SESSION_LIFETIME_DAYS') or 30)
+REMEMBER_COOKIE_DURATION_DAYS = int(_get('REMEMBER_COOKIE_DURATION_DAYS') or 30)
+SESSION_COOKIE_NAME = _get('SESSION_COOKIE_NAME') or 'boxchat_session'
+SESSION_COOKIE_HTTPONLY = bool(_get('SESSION_COOKIE_HTTPONLY'))
+SESSION_COOKIE_SAMESITE = _get('SESSION_COOKIE_SAMESITE') or 'Lax'
+SESSION_COOKIE_SECURE = bool(_get('SESSION_COOKIE_SECURE'))
+REMEMBER_COOKIE_NAME = _get('REMEMBER_COOKIE_NAME') or 'boxchat_remember'
+REMEMBER_COOKIE_HTTPONLY = bool(_get('REMEMBER_COOKIE_HTTPONLY'))
+REMEMBER_COOKIE_SAMESITE = _get('REMEMBER_COOKIE_SAMESITE') or 'Lax'
+REMEMBER_COOKIE_SECURE = bool(_get('REMEMBER_COOKIE_SECURE'))
+PERMANENT_SESSION_LIFETIME = timedelta(days=PERMANENT_SESSION_LIFETIME_DAYS)
+REMEMBER_COOKIE_DURATION = timedelta(days=REMEMBER_COOKIE_DURATION_DAYS)
 
 # File uploads
 UPLOAD_FOLDER = _get('UPLOAD_FOLDER')

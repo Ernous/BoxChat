@@ -7,3 +7,5 @@ Pillow
 gunicorn
 python-socketio
 python-engineio
+python-dotenv
+giphy-client
