@@ -5,17 +5,22 @@ BoxChat is a simple, self-hosted messenger application.
 ## Stack
 
 - **Backend:** Python, Flask, Socket.IO, JavaScript
-- **Frontend:** HTML, CSS, JavaScript
+- **Frontend:** Vite, React, MaterialUI
 
 ## Credits
 
 - **D7TUN6:** Founder, leader, full stack developer
 - **Nekto:** Tester, frontend fixer
 - **Toffo:** Future redesign and UI/UX designer
+- **Sophron:** Added some new reactions
+- **Ernela:** Frontend rewrite, much small new functions and fixes
 
 ## Status
 
 This project is maintained on a best-effort basis. Contributions are welcome!
+
+## Important
+v3.0 is the last python version! in the next version backend will be rewritten from python to go
 
 ## Getting Started
 
@@ -51,8 +56,11 @@ python run.py
 ### Setup with Nix
 
 ```bash
+# Activate nix shell
 nix-shell
 python tools/migration.py
+
+# Start the server
 python run.py
 ```
 
